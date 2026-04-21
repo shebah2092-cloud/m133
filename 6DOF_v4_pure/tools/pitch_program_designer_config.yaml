@@ -1,0 +1,233 @@
+# =============================================================================
+# Pitch Program Designer Configuration
+# تكوين مصمم برنامج الميل
+# =============================================================================
+#
+# This configuration file controls the pitch_program_designer tool which
+# automatically generates pitch_program parameters for a given rocket and
+# desired range.
+#
+# هذا الملف يتحكم في أداة مصمم برنامج الميل التي تولد تلقائياً
+# معاملات برنامج الميل لصاروخ معين ومدى مطلوب.
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Rocket Selection / اختيار الصاروخ
+# -----------------------------------------------------------------------------
+rocket:
+  # Rocket model name (must exist in data/rocket_models/)
+  # اسم نموذج الصاروخ (يجب أن يكون موجوداً في data/rocket_models/)
+  name: "rocket_M130_v01_CFD68"
+  
+  # Multi-stage configuration / تكوين متعدد المراحل
+  # Set to true for multi-stage rockets
+  # اضبط على true للصواريخ متعددة المراحل
+  multi_stage: false
+  
+  # Number of stages (only used if multi_stage: true)
+  # عدد المراحل (يُستخدم فقط إذا كان multi_stage: true)
+  num_stages: 1
+
+# -----------------------------------------------------------------------------
+# Mission Parameters / معاملات المهمة
+# -----------------------------------------------------------------------------
+mission:
+  # Desired ground range in kilometers
+  # المدى الأرضي المطلوب بالكيلومتر
+  # Supported range: 15 km to 2000 km
+  # المدى المدعوم: 15 كم إلى 2000 كم
+  desired_range_km: 10.0
+  
+  # Launch heading in degrees (0 = North, 90 = East)
+  # اتجاه الإطلاق بالدرجات (0 = شمال، 90 = شرق)
+  heading_deg: 90.0
+  
+  # Launch site altitude in meters above sea level
+  # ارتفاع موقع الإطلاق بالمتر فوق سطح البحر
+  launch_altitude_m: 2200.0
+
+# -----------------------------------------------------------------------------
+# Initial Attitude / الاتجاه الأولي
+# -----------------------------------------------------------------------------
+initial_attitude:
+  # Initial pitch angle in degrees (angle from horizontal)
+  # زاوية الميل الأولية بالدرجات (الزاوية من الأفق)
+  # Typical values: 75-85 degrees for large rockets
+  # القيم النموذجية: 75-85 درجة للصواريخ الكبيرة
+  pitch_initial_deg: 72.0
+  
+  # Roll angle in degrees (usually 0)
+  # زاوية الدوران بالدرجات (عادة 0)
+  roll_deg: 0.0
+
+# -----------------------------------------------------------------------------
+# Pitch Program Constraints / قيود برنامج الميل
+# -----------------------------------------------------------------------------
+constraints:
+  # Minimum pitch target angle (degrees)
+  # الحد الأدنى لزاوية الميل المستهدفة (درجات)
+  # Lower angles = longer range but more stress
+  # زوايا أقل = مدى أطول لكن إجهاد أكثر
+  min_pitch_target_deg: 15.0
+  
+  # Maximum pitch target angle (degrees)
+  # الحد الأقصى لزاوية الميل المستهدفة (درجات)
+  max_pitch_target_deg: 70.0
+  
+  # Minimum vertical hold time (seconds)
+  # الحد الأدنى لزمن الثبات العمودي (ثواني)
+  min_vertical_hold_s: 1.0
+  
+  # Maximum vertical hold time (seconds)
+  # الحد الأقصى لزمن الثبات العمودي (ثواني)
+  max_vertical_hold_s: 10.0
+  
+  # Minimum airspeed for velocity alignment (m/s)
+  # الحد الأدنى للسرعة الجوية لمحاذاة السرعة (م/ث)
+  min_airspeed_m_s: 50.0
+
+# -----------------------------------------------------------------------------
+# Optimization Settings / إعدادات التحسين
+# -----------------------------------------------------------------------------
+optimization:
+  # Enable optimization refinement
+  # تفعيل تحسين المعاملات
+  # If false, only heuristic-based parameters are generated
+  # إذا كان false، يتم توليد المعاملات بالمعادلات فقط
+  enabled: true
+  
+  # Maximum number of simulation iterations for optimization
+  # الحد الأقصى لعدد تكرارات المحاكاة للتحسين
+  max_iterations: 20
+  
+  # Range tolerance in kilometers
+  # تسامح المدى بالكيلومتر
+  # Optimization stops when achieved range is within this tolerance
+  # يتوقف التحسين عندما يكون المدى المحقق ضمن هذا التسامح
+  range_tolerance_km: 2.0
+  
+  # Simulation time limit in seconds
+  # الحد الزمني للمحاكاة بالثواني
+  # Should be long enough for the rocket to impact
+  # يجب أن يكون طويلاً بما يكفي لاصطدام الصاروخ
+  simulation_time_s: 600.0
+
+# -----------------------------------------------------------------------------
+# Output Settings / إعدادات المخرجات
+# -----------------------------------------------------------------------------
+output:
+  # Output directory for generated files
+  # مجلد المخرجات للملفات المولدة
+  # Use "." for current directory
+  # استخدم "." للمجلد الحالي
+  directory: "."
+  
+  # Output filename prefix
+  # بادئة اسم ملف المخرجات
+  filename_prefix: "generated_pitch_program"
+  
+  # Include detailed report
+  # تضمين تقرير مفصل
+  include_report: true
+  
+  # Print results to console
+  # طباعة النتائج على الشاشة
+  print_to_console: true
+
+# -----------------------------------------------------------------------------
+# Advanced Settings / إعدادات متقدمة
+# -----------------------------------------------------------------------------
+advanced:
+  # Use long_range_mode for simulations (ECEF coordinates)
+  # استخدام وضع المدى الطويل للمحاكاات (إحداثيات ECEF)
+  # Recommended for ranges > 50 km
+  # موصى به للمديات > 50 كم
+  auto_long_range_mode: true
+  
+  # Long range mode threshold in km
+  # عتبة وضع المدى الطويل بالكيلومتر
+  long_range_threshold_km: 50.0
+  
+  # Heuristic coefficients for pitch_target estimation
+  # معاملات المعادلات لتقدير pitch_target
+  # pitch_target = a * ln(range_km) + b
+  # These are tuned for typical solid-fuel rockets
+  # هذه مضبوطة للصواريخ ذات الوقود الصلب النموذجية
+  heuristic_coefficients:
+    # For short range (15-100 km)
+    # للمدى القصير (15-100 كم)
+    short_range:
+      a: -8.0
+      b: 70.0
+    # For medium range (100-500 km)
+    # للمدى المتوسط (100-500 كم)
+    medium_range:
+      a: -10.0
+      b: 75.0
+    # For long range (500-2000 km)
+    # للمدى الطويل (500-2000 كم)
+    long_range:
+      a: -6.0
+      b: 55.0
+
+# =============================================================================
+# Range Examples / أمثلة المديات
+# =============================================================================
+#
+# Below are example configurations for different range targets.
+# Copy the relevant section to the mission block above.
+#
+# فيما يلي أمثلة تكوينات لأهداف مديات مختلفة.
+# انسخ القسم المناسب إلى كتلة المهمة أعلاه.
+#
+# -----------------------------------------------------------------------------
+# Short Range (15-50 km) / المدى القصير
+# -----------------------------------------------------------------------------
+# mission:
+#   desired_range_km: 30.0
+#   heading_deg: 0.0
+#   launch_altitude_m: 0.0
+# 
+# Expected pitch_target: ~55-65 degrees
+# المتوقع pitch_target: ~55-65 درجة
+#
+# -----------------------------------------------------------------------------
+# Medium Range (50-200 km) / المدى المتوسط
+# -----------------------------------------------------------------------------
+# mission:
+#   desired_range_km: 150.0
+#   heading_deg: 0.0
+#   launch_altitude_m: 0.0
+#
+# Expected pitch_target: ~35-45 degrees
+# المتوقع pitch_target: ~35-45 درجة
+#
+# -----------------------------------------------------------------------------
+# Long Range (200-500 km) / المدى الطويل
+# -----------------------------------------------------------------------------
+# mission:
+#   desired_range_km: 350.0
+#   heading_deg: 0.0
+#   launch_altitude_m: 0.0
+#
+# Expected pitch_target: ~25-35 degrees
+# المتوقع pitch_target: ~25-35 درجة
+#
+# -----------------------------------------------------------------------------
+# Very Long Range (500-2000 km) / المدى الطويل جداً
+# -----------------------------------------------------------------------------
+# mission:
+#   desired_range_km: 1000.0
+#   heading_deg: 0.0
+#   launch_altitude_m: 0.0
+#
+# Expected pitch_target: ~20-30 degrees
+# المتوقع pitch_target: ~20-30 درجة
+#
+# Note: Very long range requires multi-stage rockets with sufficient
+# thrust and propellant mass.
+# ملاحظة: المدى الطويل جداً يتطلب صواريخ متعددة المراحل بدفع
+# وكتلة وقود كافية.
+#
+# =============================================================================

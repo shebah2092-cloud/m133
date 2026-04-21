@@ -1,0 +1,130 @@
+# ============================================================
+# IDE & Editor files (personal settings)
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ============================================================
+# C / C++ build artifacts
+# ============================================================
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.dylib
+*.exe
+*.out
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.cmake
+
+# ============================================================
+# Android / Gradle
+# ============================================================
+AndroidApp/.gradle/
+AndroidApp/build/
+AndroidApp/app/build/
+AndroidApp/local.properties
+AndroidApp/.cxx/
+AndroidApp/captures/
+AndroidApp/**/build/
+AndroidApp/**/.gradle/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.keystore
+*.jks
+
+# ============================================================
+# PX4-Autopilot (large nested repo & build artifacts)
+# ============================================================
+# Nested git repositories (excluded entirely)
+AndroidApp/app/src/main/cpp/PX4-Autopilot/
+AndroidApp/app/src/main/cpp/libusb_src/
+
+# ============================================================
+# acados generated code & build
+# ============================================================
+# NOTE: c_generated_code/ and acados-main/build/ are intentionally INCLUDED
+acados_ocp.json
+acados_ocp_nlp.json
+
+# ============================================================
+# Simulation results, logs & large data files
+# ============================================================
+*.log
+*.ulg
+*.bag
+*.csv.gz
+sitl_*_output.log
+results/
+logs/
+backup_v2_*/
+
+# ============================================================
+# Large binary / model files (>100MB GitHub limit)
+# ============================================================
+*.tar
+*.tar.gz
+*.tar.xz
+*.zip
+*.7z
+*.iso
+*.bin
+*.pack
+*.h5
+*.hdf5
+*.ckpt
+*.pth
+*.weights
+*.onnx
+
+# ============================================================
+# Secrets & local config
+# ============================================================
+.env
+.env.*
+*.pem
+*.key
+secrets/
+local.properties
+
+# ============================================================
+# Misc
+# ============================================================
+*.tmp
+*.bak
+*.orig
+core.*

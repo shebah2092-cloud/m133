@@ -1,0 +1,31 @@
+# ==========================================================================
+# ملف إدخال اتجاه الإطلاق - Launch Direction Input File
+# ==========================================================================
+# أدخل القيم المطلوبة أدناه ثم شغّل الأداة:
+# Enter the required values below then run the tool:
+#
+#   python tools/calculate_launch.py
+#
+# ==========================================================================
+
+# زاوية الإطلاق (بالدرجات) - من 0 إلى 90
+# Launch angle (in degrees) - from 0 to 90
+# 0° = أفقي/horizontal, 90° = عمودي/vertical
+pitch_deg: 69
+
+# اتجاه الإطلاق (بالدرجات) أو اسم الاتجاه
+# Launch direction (in degrees) or direction name
+# 0° = شمال/North, 90° = شرق/East, 180° = جنوب/South, 270° = غرب/West
+#
+# يمكنك استخدام الأرقام أو الأسماء:
+# You can use numbers or names:
+#   - north أو شمال أو 0
+#   - east أو شرق أو 90
+#   - south أو جنوب أو 180
+#   - west أو غرب أو 270
+#   - أو أي زاوية أخرى (مثل 45 للشمال الشرقي)
+direction: east
+
+# الدوران حول المحور الطولي (عادة 0)
+# Roll about longitudinal axis (usually 0)
+roll_deg: 0

@@ -1,0 +1,12 @@
+#pragma once
+#define PX4_GIT_VERSION_STR      "68fb0b8ad2527815782ce0510f00979fe8d92ef2"
+#define PX4_GIT_VERSION_BINARY    0x68fb0b8ad2527815ULL
+#define PX4_GIT_TAG_STR          "68fb0b8a-dirty"
+#define PX4_GIT_BRANCH_STR       "master"
+#define PX4_GIT_BRANCH_NAME      "master"
+#define PX4_GIT_OEM_VERSION_STR  ""
+#define PX4_GIT_TAG_OR_BRANCH_NAME "master"
+#define MAVLINK_LIB_GIT_VERSION_STR    "unknown"
+#define MAVLINK_LIB_GIT_VERSION_BINARY  0x0000000000000000ULL
+#define ECL_LIB_GIT_VERSION_STR    "unknown"
+#define ECL_LIB_GIT_VERSION_BINARY  0x0000000000000000ULL

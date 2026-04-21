@@ -1,0 +1,1 @@
+/home/sajad/Desktop/px./px/AndroidApp/app/src/main/cpp/CMakeLists.txt

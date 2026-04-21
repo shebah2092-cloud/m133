@@ -1,0 +1,40 @@
+target:
+  channel: tcp
+  tcp:
+    host: 0.0.0.0
+    port: 4560
+    timeout_s: 600.0
+  serial:
+    device: /dev/ttyACM0
+    baud: 921600
+clock:
+  mode: realtime
+  max_dropped_msgs: 10
+timing:
+  enabled: true
+  deadline_us: 20000
+  warn_us: 10000
+  sample_hz: 50
+scenario:
+  sim_config: config/6dof_config_advanced.yaml
+  duration_s: 500.0
+  dt_s: 0.01
+  random_seed: 42
+thresholds:
+  vs_baseline:
+    velocity_mae_max: 5.0
+    attitude_max_deg: 5.0
+    cep_max_m: 50.0
+    altitude_mae_max: 100.0
+  timing:
+    mpc_p95_max_us: 10000
+    mpc_p99_max_us: 15000
+    cycle_p95_max_us: 15000
+    deadline_miss_max: 0
+    jitter_std_max_us: 2000
+output:
+  results_dir: 6DOF_v4_pure/pil/results
+  csv_name: pil_flight.csv
+  timing_csv: pil_timing.csv
+  html_report: pil_comparison.html
+  archive: true

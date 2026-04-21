@@ -1,0 +1,159 @@
+# ============================================================================
+# ملف خصائص الصاروخ - صاروخ باليستي تكتيكي بعيد المدى
+# Rocket Properties Configuration File - Long-Range Tactical Ballistic Missile
+# ============================================================================
+#
+# هذا الملف يحتوي على الخصائص الفيزيائية لصاروخ باليستي تكتيكي
+# المدى: 30000 كم
+# تُستخدم بواسطة حزمة rocket_models لحسابات الديناميكا والتحكم
+#
+# ============================================================================
+
+# ==========================================================================
+# خصائص الكتلة
+# Mass Properties
+# ==========================================================================
+
+# الكتلة الجافة (بدون الوقود) - كجم
+mass_dry_kg: 11.11 #
+
+# كتلة الوقود - كجم
+propellant_mass_kg: 1.63 #
+
+# m_liner : 84.8535
+
+# ==========================================================================
+# مركز الثقل
+# Center of Gravity
+# ==========================================================================
+
+# موقع مركز الثقل الجاف في إطار الجسم [x, y, z] - م
+cg_dry_body_m: [0.5684, 0.0, 0.0] 
+
+# موقع مركز ثقل الوقود في إطار الجسم [x, y, z] - م
+cg_propellant_body_m: [0.5972, 0.0, 0.0]
+
+# ==========================================================================
+# عزوم القصور الذاتي
+# Moments of Inertia
+# ==========================================================================
+
+# عزوم القصور الذاتي الجافة [Ixx, Iyy, Izz] - كجم.م²
+inertia_dry_kgm2: [0.0356 , 1.0789 ,  1.0779]
+
+# عزوم القصور الذاتي الكاملة (مع الوقود) [Ixx, Iyy, Izz] - كجم.م²
+# Full moments of inertia (with propellant) [Ixx, Iyy, Izz] - kg·m²
+# ⚠️ مهم: يجب تحديد هذه القيم من CAD أو الاختبارات للحصول على أفضل دقة
+# ⚠️ IMPORTANT: These values should be specified from CAD or testing for best accuracy
+# إذا لم يتم تحديدها، سيتم تقديرها باستخدام نظرية المحاور المتوازية
+# If not specified, values will be estimated using parallel axis theorem
+inertia_full_kgm2: [0.0389, 1.1651, 1.166]  # TODO: أدخل القيم الفعلية | Enter actual values
+
+# ==========================================================================
+# الأبعاد المرجعية
+# Reference Dimensions
+# ==========================================================================
+
+# القطر المرجعي - م
+ref_diameter_m: 0.13
+
+# الطول المرجعي - م
+ref_length_m: 1.094
+
+# المساحة المرجعية (π × (d/2)²) - م²
+ref_area_m2: 0.01327
+
+# ==========================================================================
+
+# ==========================================================================
+# معاملات الفوهة
+# Nozzle Parameters=========================================
+
+# مساحة خروج الفوهة (Ae) - م²
+nozzle_exit_area_m2: 0.000804247719
+
+# ضغط مستوى سطح البحر القياسي (p_0) - باسكال
+sea_level_pressure_Pa: 76578.0
+
+# ==========================================================================
+# خصائص الدفات
+
+# ==========================================================================
+# هندسة الوقود (اختياري - لتحسين دقة حساب عزم القصور الذاتي)
+# Propellant Geometry (Optional - For Improved Inertia Calculation Accuracy)
+# ==========================================================================
+#
+# ملاحظة: هذه المعاملات اختيارية. إذا لم يتم تحديدها، سيتم تقدير القيم تلقائياً
+# Note: These parameters are optional. If not specified, values will be estimated automatically
+#
+# يُنصح بتحديد هذه القيم للحصول على أفضل دقة في حسابات عزم القصور الذاتي
+# Recommended to specify these values for best accuracy in inertia calculations
+
+# نصف القطر الخارجي لحبة الوقود - م
+# Outer radius of propellant grain - m
+# propellant_outer_radius_m:  # TODO: أدخل القيمة الفعلية | Enter actual value
+
+# طول حبة الوقود - م  
+# Length of propellant grain - m
+# propellant_length_m:  # TODO: أدخل القيمة الفعلية | Enter actual value
+
+# نسبة نصف القطر الداخلي إلى الخارجي (0 = صلب، 0.5 = مجوف نموذجي، <1)
+# Ratio of inner to outer radius (0 = solid, 0.5 = typical hollow, <1)
+# propellant_inner_radius_ratio: 0.5  # TODO: عدّل حسب التصميم | Adjust per design
+
+config_type: "X"              # نوع تكوين الزعانف: "X" أو "+" | Fin configuration type: "X" or "+"
+fin_location: tail          # موقع الزعانف: canard (أمامية) أو tail (خلفية) | Fin location: canard (front) or tail (rear)
+
+# Fin Properties
+# ==========================================================================
+
+# ==========================================================================
+# معاملات المراحل
+# Stage Parameters
+# ==========================================================================
+thrust_multiplier: 1.0
+CA_multiplier: 1
+# عدد المراحل
+num_stages: 1
+
+launcher:
+  enabled: false                # تفعيل/تعطيل نموذج قضيب الإطلاق (Enable/disable launch rail model)
+  rail_length: 1.094          # m - طول القضيب الكلي (total rail length)
+  rail_effective_length: 1.0 # m - الطول الفعال (CG travel distance for rail exit)
+  rail_friction_coefficient: 0.1  # معامل الاحتكاك (friction coefficient)
+  launch_elevation: 65.0        # deg - يجب أن تتطابق مع initial attitude (65°)
+
+# ==========================================================================
+# خصائص المشغلات (Actuator Properties)
+# KST X20-7.4-M-830 HV Brushless Servo
+# ==========================================================================
+actuator:
+  type: "KST X20-7.4-M-830"      # اسم/موديل السيرفو
+  motor: "brushless"              # brushless | brushed
+
+  # نوع النموذج: 1 = first-order | 2 = second-order with delay
+  model: 1
+
+  # معاملات النموذج من الدرجة الأولى (model: 1)
+  tau_servo: 0.015                # s - ثابت الزمن (سريع - brushless)
+
+  # معاملات النموذج من الدرجة الثانية (model: 2)
+  wn: 100.0                       # rad/s - التردد الطبيعي
+  zeta_wn: 100.0                  # damping × wn (ζ=1.0 critically damped)
+  delay_steps: 2                  # خطوات التأخير
+  delay_buffer_size: 6            # حجم buffer التأخير
+
+  # الحدود الفيزيائية
+  delta_max: 20.0                 # deg - أقصى انحراف
+  delta_min: -20.0                # deg - أدنى انحراف
+  rate_max: 270.0                 # deg/s - أقصى معدل (rated speed: 0.22s/60°)
+
+  # عدد المشغلات وإعداداتها
+  n_actuators: 4
+  delta_trim: [0.0, 0.0, 0.0, 0.0]   # deg
+  delta_scale: [1.0, 1.0, 1.0, 1.0]
+  backlash: 0.0                   # deg
+
+  # خصائص إضافية (للتوثيق)
+  torque_max_Nm: 3.8              # N.m - أقصى عزم (stalling @ 7.4V)
+  voltage: 7.4                    # V - الجهد التشغيلي
