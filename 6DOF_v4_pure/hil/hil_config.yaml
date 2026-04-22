@@ -30,11 +30,13 @@ warmup:
   preflight_reset: true     # force-stop للتطبيق + إعادة إعداد adb reverse/forward قبل بدء الجسر
 # ─── إعدادات خاصة بـ HIL ──────────────────────────────────────────────────
 # السيرفوهات حقيقية على CAN. فيدباك CAN (SRV_FB عبر DEBUG_FLOAT_ARRAY id=1)
-# يُستخدم لمسار التحقق فقط (هل العتاد يتبع الأوامر؟) وليس لمسار الديناميكا.
+# يصدر من XqpowerCan driver بعد قراءة PDO auto-report من السيرفوهات
+# الحقيقية على bus CAN — ليس اصطناعياً من داخل PX4.
+# يُستخدم لمسار الرصد فقط (هل العتاد يتبع الأوامر؟) وليس لمسار الديناميكا.
 # مسار الديناميكا: أمر MPC → نموذج السيرفو Python (τ=15ms) → المحاكاة
-# مسار التحقق: CAN feedback ↔ أمر MPC → تحقق سلامة + عتبات تتبع
+# مسار الرصد: CAN feedback ↔ أمر MPC → تسجيل CSV + فحص سلامة 10°
 hil:
-  use_servo_feedback: true              # rocket_mpc ينشر SRV_FB اصطناعي في HITL/SITL
+  use_servo_feedback: true              # تمكين قراءة SRV_FB للتسجيل والسلامة
   servo_feedback_timeout_ms: 200.0      # يُعدّ الفيدباك قديماً بعد 200ms
   require_all_servos_online: false      # إن true: جميع السيرفوهات الأربعة لازم تكون online_mask=0x0F
   # ─── المعايرة التلقائية لتصفير السيرفوهات قبل الإقلاع ──────────────────
