@@ -111,7 +111,7 @@ PARAM_DEFINE_INT32(XQCAN_REV, 0);
  * interval to reach the servos.
  *
  * @min 10
- * @max 250
+ * @max 255
  * @unit ms
  * @reboot_required true
  * @group XQPOWER CAN
