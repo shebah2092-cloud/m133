@@ -45,12 +45,26 @@ _APP_MAIN_ACTIVITY = f"{_APP_PACKAGE}/.MainActivity"
 
 
 def _adb() -> str | None:
-    """يحاول تحديد مسار adb. يُرجع None إن لم يُعثر عليه."""
-    for cand in (
+    """يحاول تحديد مسار adb. يُرجع None إن لم يُعثر عليه.
+
+    أولوية البحث:
+      1) متغيّر البيئة ``M13_ADB`` (مسار صريح محدَّد من المستخدم)
+      2) ``adb`` في ``PATH`` (المسار الأنسب عبر الأجهزة)
+      3) المسار الافتراضي للـ Android SDK في home (``~/Android/Sdk/...``)
+
+    الإصدارات السابقة تضمّنت مساراً مُرمَّزاً صُلباً لجهاز مستخدم معيّن
+    (``/home/yoga/...``). حُذف لصالح portability عبر بيئات التطوير
+    (M7).
+    """
+    env_path = os.environ.get("M13_ADB")
+    cands = []
+    if env_path:
+        cands.append(env_path)
+    cands.extend([
         shutil.which("adb"),
-        "/home/yoga/Android/Sdk/platform-tools/adb",
         os.path.expanduser("~/Android/Sdk/platform-tools/adb"),
-    ):
+    ])
+    for cand in cands:
         if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
             return cand
     return None
@@ -174,23 +188,48 @@ def _q2euler_deg(q0, q1, q2, q3):
 
 
 def load_csv(path: str) -> dict:
-    raw: dict[str, list] = {}
-    str_cols: dict[str, list[str]] = {}
+    """يقرأ CSV بأعمدة رقمية ونصية مختلطة.
+
+    الإصدار السابق كان يستخدم heuristic ``try float except str`` لكل خلية
+    على حدة، فأي خطأ formatting في عمود رقمي يُبدّل القيمة إلى 0.0 بصمت
+    وكان يضع العمود النصي كـ ``[0.0]*n`` (M6). الجديد:
+
+      1) يُحمّل كل الصفوف أولاً،
+      2) لكل عمود يفحص كل خلاياه غير الفارغة: إن حاولنا ``float()`` عليها
+         ونجحت جميعها → عمود رقمي؛ وإلا → عمود نصي،
+      3) الأعمدة الرقمية تُخزَّن كـ ``np.ndarray``،
+      4) الأعمدة النصية تُخزَّن تحت ``_str_<name>`` فقط؛ لا يُضاف مفتاح
+         رقمي عدم مُزيّف (لكن نُبقي المفتاح الرقمي المصفوف من أصفار إن
+         وُجد له consumer downstream — لا يوجد حالياً، لذا نُسقطه).
+
+    النتيجة: رُبّما عمود fin_source يصبح متاحاً فقط عبر
+    ``data['_str_fin_source']`` — وهو ما يفعله ``_analyze_servo_tracking``
+    بالفعل.
+    """
     with open(path, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
-        for k in r.fieldnames or []:
-            raw[k] = []
-            str_cols[k] = []
-        for row in r:
-            for k in r.fieldnames or []:
-                try:
-                    raw[k].append(float(row[k]))
-                except (ValueError, TypeError):
-                    raw[k].append(0.0)
-                    str_cols[k].append(row[k] if row[k] else "")
-    data = {k: np.array(v) for k, v in raw.items()}
-    for k, vals in str_cols.items():
-        if any(v != "" for v in vals):
+        fieldnames = list(r.fieldnames or [])
+        rows = list(r)
+
+    data: dict = {}
+    for k in fieldnames:
+        vals = [row.get(k, "") for row in rows]
+        # فحص النوع: محاولة تحويل كل خلية غير فارغة إلى float.
+        is_numeric = True
+        nums: list[float] = []
+        for v in vals:
+            if v == "" or v is None:
+                nums.append(0.0)
+                continue
+            try:
+                nums.append(float(v))
+            except (ValueError, TypeError):
+                is_numeric = False
+                break
+        if is_numeric:
+            data[k] = np.array(nums)
+        else:
+            # عمود نصي: نحتفظ بالقيم الخام تحت prefix ``_str_`` فقط.
             data[f"_str_{k}"] = vals
     for canon, cands in _ALIASES.items():
         if canon in data:

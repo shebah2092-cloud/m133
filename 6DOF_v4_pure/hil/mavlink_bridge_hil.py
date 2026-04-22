@@ -544,6 +544,12 @@ class HILBridge:
         self._actuator_msg_count = 0         # عدد رسائل HIL_ACTUATOR_CONTROLS المستلمة
         self._last_param_values: dict = {}   # name -> {value, type, count, index}
         self._param_lock = threading.Lock()  # يحمي _last_param_values (يُكتب من خيط timing 5760)
+        # ``_running`` عَلَم bool يُكتب من عدّة خيوط بلا قفل. CPython يضمن
+        # atomicity لـ bool-assign (مرجع واحد في عدد منازل البايتكود)، فالقراءة
+        # لا يمكن أن ترى نصف قيمة. الدلالات القوية (happens-before) غير مضمونة
+        # رسمياً لكن GIL يجعلها عملياً آمنة. لو أضفنا قفلاً لاحقاً، يجب تغطية:
+        # _send / _recv_nonblock / _timing_reader_loop + كل فحوصات while الـ
+        # running في حلقات warm-up و flight. M10: مُوثَّق كعَلَم atomic متعمّد.
         self._running = False
 
         # ─── فيدباك السيرفو الحقيقي ─────────────────────────────────────
@@ -833,6 +839,16 @@ class HILBridge:
 
     # ─── بناء بيانات الحسّاسات ───────────────────────────────────────────────
 
+    def _static_sensors(self, state: np.ndarray) -> dict:
+        """حسّاسات ثابتة للصاروخ على المنصّة (forces=0, vel=0) مع ضجيج جديد
+        كل استدعاء.
+
+        الاستدعاء من حلقات warm-up/auto-zero/PARAM بدل استخدام ``init_sensors``
+        مُحسَب مرة واحدة يحلّ M9: ضجيج متجدّد في كل تكرار يمنع EKF2 من بناء
+        bias estimation على قيمة ثابتة تماماً طوال ~80s من التهيئة.
+        """
+        return self._sensors({"forces": [0, 0, 0], "vel_ned": [0, 0, 0]}, state)
+
     def _sensors(self, snapshot: dict, state: np.ndarray):
         pos = state[0:3]
         vel = state[3:6]
@@ -894,15 +910,15 @@ class HILBridge:
         def _ctrl(_state_dict, _t):
             return self._fins_rad.copy()
 
-        # warm-up موسّع: إرسال HEARTBEAT وحسّاسات ثابتة لتمكين الهاتف من:
+        # warm-up موسّع: إرسال HEARTBEAT وحسّاسات متجدّدة الضجيج لتمكين الهاتف من:
         # (1) بدء simulator_mavlink وEKF2، (2) تنفيذ auto-arm، (3) ثبات القياسات.
-        init_sensors = self._sensors(
-            {"forces": [0, 0, 0], "vel_ned": [0, 0, 0]}, state
-        )
+        # كل حلقة warm-up أدناه تستدعي self._static_sensors(state) في كل تكرار
+        # بدل مشاركة dict ثابت (M9): الضجيج يتجدّد → EKF2 لا يبني bias
+        # estimation على قيمة محفورة.
 
         # ─── معايرة صفر السيرفوهات التلقائية (قبل warm-up) ──────────────
         if self.use_servo_feedback and self.servo_auto_zero:
-            self._calibrate_servo_zero(init_sensors, state, dt)
+            self._calibrate_servo_zero(state, dt)
 
         # ─── إلغاء Flight Termination (لو عالقة من جلسة سابقة) ────────
         # بدون هذا، PX4 يرفض ARM ويبقى في حالة إنهاء الطيران.
@@ -918,7 +934,7 @@ class HILBridge:
         # بدون هذا، PX4 يعمل في real flight mode ولا يُرسل HIL_ACTUATOR_CONTROLS.
         # نُرسل PARAM_SET ثم نتحقق من PARAM_VALUE المُعاد.
         if self.set_hitl_param:
-            self._set_hitl_param(init_sensors, dt)
+            self._set_hitl_param(state, dt)
 
         # ─── Warm-up ديناميكي: ننتظر PX4 يصبح جاهزاً ───────────────
         # الاستراتيجية:
@@ -956,11 +972,12 @@ class HILBridge:
                 self._sim_t_us,
                 self.launch_lat, self.launch_lon, self.launch_alt, 0, 0, 0,
             ))
+            s = self._static_sensors(state)
             self._send(build_hil_sensor(
                 self._sim_t_us,
-                init_sensors["accel_body"], init_sensors["gyro_body"],
-                init_sensors["mag_body"], init_sensors["baro_p"],
-                init_sensors["diff_p"], init_sensors["pressure_alt"],
+                s["accel_body"], s["gyro_body"],
+                s["mag_body"], s["baro_p"],
+                s["diff_p"], s["pressure_alt"],
             ))
 
             # أرسل ARM بشكل متكرر
@@ -993,11 +1010,12 @@ class HILBridge:
                             self.launch_lat, self.launch_lon, self.launch_alt,
                             0, 0, 0, np.array([0, 0, -9.80665]), 0.0,
                         ))
+                        s = self._static_sensors(state)
                         self._send(build_hil_sensor(
                             self._sim_t_us,
-                            init_sensors["accel_body"], init_sensors["gyro_body"],
-                            init_sensors["mag_body"], init_sensors["baro_p"],
-                            init_sensors["diff_p"], init_sensors["pressure_alt"],
+                            s["accel_body"], s["gyro_body"],
+                            s["mag_body"], s["baro_p"],
+                            s["diff_p"], s["pressure_alt"],
                         ))
                         self._drain_target(dt)
                         time.sleep(0.005)
@@ -1042,10 +1060,14 @@ class HILBridge:
         step = 0
         t = 0.0
 
-        # معدلات الإرسال: HIL_SENSOR يستهدف 250Hz، HIL_STATE 50Hz، HIL_GPS 10Hz.
-        # إذا كان dt يحدّ السقف (مثلاً dt=0.01 → max 100Hz)، فـ sensor_every=1
-        # يعني إرسال في كل خطوة (أي بمعدل 1/dt = 100Hz)، وهو ما يقبله EKF2.
-        sensor_every = max(1, int(round(1.0 / (250 * dt))))
+        # معدلات الإرسال:
+        #   HIL_SENSOR  : 100Hz (سقف عملي محدَّد بـ dt؛ EKF2 يقبل 80Hz+).
+        #   HIL_STATE   : 50Hz (ground-truth عرضي، لا يُغذّي EKF2).
+        #   HIL_GPS     : 10Hz (تحديث GPS قياسي).
+        # الصيغة السابقة كانت `1.0/(250*dt)` التي تُنتج 0→max(1,0)=1 مع dt=0.01،
+        # مُوهمة أن المعدّل 250Hz. الصيغة الجديدة صريحة: `1.0/(100*dt)` مع تعليق
+        # يُبرز أن 100 هي سقف فعلي مع dt=0.01 (تجنّب M4 confusion).
+        sensor_every = max(1, int(round(1.0 / (100 * dt))))
         gps_every = max(1, int(round(1.0 / (10 * dt))))
         state_every = max(1, int(round(1.0 / (50 * dt))))
         hb_every = 100
@@ -1275,7 +1297,7 @@ class HILBridge:
             return False
 
     def _await_param_value(self, name: str, timeout_s: float,
-                           init_sensors: dict, dt: float
+                           state: np.ndarray, dt: float
                            ) -> Optional[dict]:
         """ينتظر وصول PARAM_VALUE للـ param المحدّد على قناة 5760.
 
@@ -1287,11 +1309,12 @@ class HILBridge:
         while time.monotonic() < t_end and self._running:
             self._sim_t_us = int(time.monotonic() * 1e6)
             self._send(build_heartbeat())
+            s = self._static_sensors(state)
             self._send(build_hil_sensor(
                 self._sim_t_us,
-                init_sensors["accel_body"], init_sensors["gyro_body"],
-                init_sensors["mag_body"], init_sensors["baro_p"],
-                init_sensors["diff_p"], init_sensors["pressure_alt"],
+                s["accel_body"], s["gyro_body"],
+                s["mag_body"], s["baro_p"],
+                s["diff_p"], s["pressure_alt"],
             ))
             self._drain_target(dt)
 
@@ -1303,7 +1326,7 @@ class HILBridge:
             time.sleep(0.02)
         return None
 
-    def _set_hitl_param(self, init_sensors: dict, dt: float) -> None:
+    def _set_hitl_param(self, state: np.ndarray, dt: float) -> None:
         """يتحقّق من أن ``SYS_HITL=1`` في PX4، ويَضبطه إذا لم يكن كذلك.
 
         **معمارية القناة**:
@@ -1361,7 +1384,7 @@ class HILBridge:
                   "param channel. Skipping SYS_HITL verify/set.")
             return
 
-        pv = self._await_param_value("SYS_HITL", 1.5, init_sensors, dt)
+        pv = self._await_param_value("SYS_HITL", 1.5, state, dt)
         if pv is not None and int(pv.get("value", -1)) == 1:
             print("[HIL] SYS_HITL=1 already set (airframe rcS) — "
                   "no PARAM_SET needed.")
@@ -1386,11 +1409,12 @@ class HILBridge:
             now = time.monotonic()
             self._sim_t_us = int(time.monotonic() * 1e6)
             self._send(build_heartbeat())
+            s = self._static_sensors(state)
             self._send(build_hil_sensor(
                 self._sim_t_us,
-                init_sensors["accel_body"], init_sensors["gyro_body"],
-                init_sensors["mag_body"], init_sensors["baro_p"],
-                init_sensors["diff_p"], init_sensors["pressure_alt"],
+                s["accel_body"], s["gyro_body"],
+                s["mag_body"], s["baro_p"],
+                s["diff_p"], s["pressure_alt"],
             ))
 
             if now >= next_send:
@@ -1426,8 +1450,7 @@ class HILBridge:
                   f"If abort_on_no_actuator=True, warm-up will fail unless "
                   f"airframe rcS sets SYS_HITL=1 itself.")
 
-    def _calibrate_servo_zero(self, init_sensors: dict, state: np.ndarray,
-                              dt: float) -> None:
+    def _calibrate_servo_zero(self, state: np.ndarray, dt: float) -> None:
         """معايرة صفر السيرفوهات التلقائية.
 
         الخطوات:
@@ -1475,11 +1498,12 @@ class HILBridge:
                 self._sim_t_us,
                 self.launch_lat, self.launch_lon, self.launch_alt, 0, 0, 0,
             ))
+            s = self._static_sensors(state)
             self._send(build_hil_sensor(
                 self._sim_t_us,
-                init_sensors["accel_body"], init_sensors["gyro_body"],
-                init_sensors["mag_body"], init_sensors["baro_p"],
-                init_sensors["diff_p"], init_sensors["pressure_alt"],
+                s["accel_body"], s["gyro_body"],
+                s["mag_body"], s["baro_p"],
+                s["diff_p"], s["pressure_alt"],
             ))
             self._drain_target(dt)
             time.sleep(0.005)
