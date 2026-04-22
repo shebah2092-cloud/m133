@@ -265,7 +265,7 @@ def load_csv(path: str) -> dict:
 # ============================================================================
 
 def compare(baseline_csv: str, hil_csv: str, timing_csv: str | None,
-            thresholds: dict) -> dict:
+            thresholds: dict, deadline_us: int = 20000) -> dict:
     print()
     print("=" * 70)
     print("  Compare: baseline ↔ HIL")
@@ -290,7 +290,7 @@ def compare(baseline_csv: str, hil_csv: str, timing_csv: str | None,
     def ip(key):
         return np.interp(t_common, t_p, hil[key]) if key in hil else np.zeros_like(t_common)
 
-    m: dict = {"t_final_base": float(t_b[-1]), "t_final_pil": float(t_p[-1])}
+    m: dict = {"t_final_base": float(t_b[-1]), "t_final_hil": float(t_p[-1])}
 
     # ارتفاع
     a_err = ip("altitude") - ib("altitude")
@@ -336,7 +336,7 @@ def compare(baseline_csv: str, hil_csv: str, timing_csv: str | None,
     m["servo_tracking"] = servo
 
     # التوقيت
-    timing = _analyze_timing(timing_csv) if timing_csv and Path(timing_csv).exists() else {}
+    timing = _analyze_timing(timing_csv, deadline_us) if timing_csv and Path(timing_csv).exists() else {}
     m["timing"] = timing
 
     # بوابة
@@ -395,7 +395,7 @@ def _analyze_servo_tracking(hil_data: dict) -> dict:
     return result
 
 
-def _analyze_timing(path: str) -> dict:
+def _analyze_timing(path: str, deadline_us: int = 20000) -> dict:
     cyc, mpc, mhe = [], [], []
     with open(path, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
@@ -424,7 +424,8 @@ def _analyze_timing(path: str) -> dict:
         "mhe_us": stats(mhe),
         "mpc_us": stats(mpc),
         "cycle_us": stats(cyc),
-        "deadline_miss": int(sum(1 for c in cyc if c > 20000)),
+        "deadline_miss": int(sum(1 for c in cyc if c > deadline_us)),
+        "jitter_std_us": float(np.std(cyc)) if len(cyc) > 1 else 0.0,
     }
 
 
@@ -452,6 +453,12 @@ def _gate(m: dict, th: dict) -> bool:
         if cyc_p95 > tg.get("cycle_p95_max_us", 1e9):
             ok = False
         if t.get("deadline_miss", 0) > tg.get("deadline_miss_max", 0):
+            ok = False
+        mpc_p99 = t.get("mpc_us", {}).get("p99", 0)
+        if mpc_p99 > tg.get("mpc_p99_max_us", 1e9):
+            ok = False
+        jitter = t.get("jitter_std_us", 0)
+        if jitter > tg.get("jitter_std_max_us", 1e9):
             ok = False
 
     # بوابة تتبع السيرفو (fin_act ↔ fin_cmd — العتاد الحقيقي)
@@ -508,13 +515,16 @@ def _print_summary(m: dict, th: dict) -> None:
     if t and t.get("samples", 0) > 0:
         print(f"\n  [timing] samples={t['samples']}  "
               f"deadline_miss={t['deadline_miss']}  "
-              f"(limit {tg.get('deadline_miss_max', 0)})")
+              f"(limit {tg.get('deadline_miss_max', 0)})  "
+              f"jitter_std={t.get('jitter_std_us', 0):.1f}µs")
         for stage in ("mhe_us", "mpc_us", "cycle_us"):
             s = t.get(stage, {})
             if s:
                 print(f"    {stage:10s} p50={s['p50']:7.1f}  "
                       f"p95={s['p95']:7.1f}  p99={s['p99']:7.1f}  "
                       f"max={s['max']:7.1f}")
+        _chk("mpc_p99 (µs)", t.get("mpc_us", {}).get("p99"), tg.get("mpc_p99_max_us"), fmt=".1f")
+        _chk("jitter_std (µs)", t.get("jitter_std_us"), tg.get("jitter_std_max_us"), fmt=".1f")
     elif t:
         print("\n  [timing] no samples — verify target publishes timing messages")
 
@@ -562,7 +572,9 @@ def main():
             print(f"[runner] reusing baseline: {baseline_csv}")
         run_hil(args.config, hil_csv, timing_csv)
 
-    report = compare(baseline_csv, hil_csv, timing_csv, cfg["thresholds"])
+    deadline_us = int(cfg.get("timing", {}).get("deadline_us", 20000))
+    report = compare(baseline_csv, hil_csv, timing_csv, cfg["thresholds"],
+                     deadline_us=deadline_us)
     sys.exit(0 if report.get("pass") else 1)
 
 
