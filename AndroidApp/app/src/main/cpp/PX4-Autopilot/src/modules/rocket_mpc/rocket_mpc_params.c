@@ -291,18 +291,15 @@ PARAM_DEFINE_FLOAT(ROCKET_IZZ_D, 1.0779f);
 
 /* ===================================================================
  *  Servo dynamics
- * =================================================================== */
-
-/**
- * Servo time constant (first-order lag)
  *
- * @unit s
- * @min 0.001
- * @max 0.5
- * @decimal 3
- * @group Rocket MPC
- */
-PARAM_DEFINE_FLOAT(ROCKET_TAU_SRV, 0.015f);
+ *  NOTE: The servo time constant is NOT a parameter — it is baked
+ *  into the acados-generated solver at 0.015 s (Qabthah1 KST X20-7.4
+ *  electric servo). See m130_acados_model.py::tau_servo_val and
+ *  SOLVER_TAU_SERVO_S in RocketMPC.cpp. Changing it requires
+ *  regenerating the solver AND updating SOLVER_TAU_SERVO_S so the
+ *  forward-guess warm start and the MHE lag filter stay consistent
+ *  with the solver's internal servo model.
+ * =================================================================== */
 
 /* ===================================================================
  *  Launch site

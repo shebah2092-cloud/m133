@@ -61,6 +61,22 @@
 // To change it, modify the Python OCP and regenerate the solver.
 static constexpr float SOLVER_DELTA_MAX_RAD = 0.3490658503988659f;   // 20° in radians
 
+// Servo time constant (first-order lag) baked into the acados solver's
+// internal servo dynamics model:
+//     delta_*_act_dot = (delta_*_s - delta_*_act) / tau_servo
+// See m130_acados_model.py::tau_servo_val (default 0.015) and
+// Qabthah1/rocket_properties.yaml::actuator.tau_servo.
+// This constant MUST match the value the solver was generated with:
+//   - MpcController::_forward_guess uses it to propagate the warm-start
+//     trajectory through the same servo model the solver optimizes over.
+//   - RocketMPC feeds a first-order-lagged copy of the commanded fin
+//     deflections to MHE as delta_*_act. The MHE aero/moment model uses
+//     delta_*_act directly (not the command), so a tau mismatch biases
+//     the MHE force/moment prediction, silently corrupting alpha and
+//     gyro_bias estimates.
+// To change tau, regenerate the solver AND update this constant.
+static constexpr float SOLVER_TAU_SERVO_S = 0.015f;
+
 // Natural gamma from thrust/mass/gravity (called with param values)
 static float compute_gamma_natural(float total_impulse, float burn_time,
 				   float launch_pitch_deg, float mass_full)
@@ -159,7 +175,6 @@ bool RocketMPC::init()
 	const float impulse        = _param_impulse.get();
 	const float thrust_override = _param_thrust.get();
 	const float t_tail         = _param_t_tail.get();
-	const float tau_servo      = _param_tau_servo.get();
 	const float target_x       = _param_xtrgt.get();
 	const float target_h       = _param_htrgt.get();
 	const float impact_ang_deg = _param_imp_ang.get();
@@ -197,7 +212,9 @@ bool RocketMPC::init()
 	mpc_cfg.Ixx_full = _param_ixx_f.get(); mpc_cfg.Ixx_dry = _param_ixx_d.get();
 	mpc_cfg.Iyy_full = _param_iyy_f.get(); mpc_cfg.Iyy_dry = _param_iyy_d.get();
 	mpc_cfg.Izz_full = _param_izz_f.get(); mpc_cfg.Izz_dry = _param_izz_d.get();
-	mpc_cfg.tau_servo       = tau_servo;
+	// tau_servo is compile-time constant matching the solver's baked value.
+	// See SOLVER_TAU_SERVO_S declaration above.
+	mpc_cfg.tau_servo       = SOLVER_TAU_SERVO_S;
 	mpc_cfg.impact_angle_deg = impact_ang_deg;
 	// gamma_natural_rad is derived at arm time from the measured launch pitch
 	// (see Run() arming block).  The init-time value is only consumed as a seed

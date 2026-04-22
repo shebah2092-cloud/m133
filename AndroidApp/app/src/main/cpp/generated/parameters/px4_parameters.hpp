@@ -1325,7 +1325,6 @@ enum class params : uint16_t {
 	ROCKET_MHE_QG,
 	ROCKET_MPC_TF,
 	ROCKET_SITL_GPS,
-	ROCKET_TAU_SRV,
 	ROCKET_TBURN,
 	ROCKET_THRUST,
 	ROCKET_T_CTRL,
@@ -8529,11 +8528,6 @@ static constexpr param_info_s parameters[] = {
 	},
 
 	{
-		.name = "ROCKET_TAU_SRV",
-		.val = { .f = 0.015 },
-	},
-
-	{
 		.name = "ROCKET_TBURN",
 		.val = { .f = 4.772 },
 	},
@@ -13034,7 +13028,6 @@ static constexpr param_type_t parameters_type[] = {
 	PARAM_TYPE_FLOAT, // ROCKET_MHE_QG
 	PARAM_TYPE_FLOAT, // ROCKET_MPC_TF
 	PARAM_TYPE_INT32, // ROCKET_SITL_GPS
-	PARAM_TYPE_FLOAT, // ROCKET_TAU_SRV
 	PARAM_TYPE_FLOAT, // ROCKET_TBURN
 	PARAM_TYPE_FLOAT, // ROCKET_THRUST
 	PARAM_TYPE_FLOAT, // ROCKET_T_CTRL
