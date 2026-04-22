@@ -192,6 +192,12 @@ void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS])
 		float dt_actual = t - _meas_buf[last_idx].t;
 
 		if (dt_actual > 3.0f * _cfg.horizon_dt) {
+			// Snapshot validity BEFORE clearing it — the reseed block
+			// below needs to know whether _last_valid.x_hat was
+			// populated by a successful solve. Checking _last_valid.valid
+			// after `_last_valid.valid = false` always reads false.
+			const bool had_valid_estimate = _last_valid.valid;
+
 			_meas_count   = 0;
 			_meas_head    = 0;
 			_param_count  = 0;
@@ -213,7 +219,7 @@ void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS])
 			// had just before losing measurements).  If we never had one,
 			// fall back to zero — the measurement likelihood alone will
 			// dominate once `min_init_meas` samples accumulate.
-			if (_last_valid.valid) {
+			if (had_valid_estimate) {
 				memcpy(_x_bar, _last_valid.x_hat, MHE_NX * sizeof(double));
 			} else {
 				memset(_x_bar, 0, sizeof(_x_bar));
