@@ -776,8 +776,15 @@ class RocketDataLoader:
         }
         
         # Actuator defaults in radians; 'units': 'rad' prevents double conversion in rocket_6dof_sim.py
+        # tau_servo default matches the acados MPC solver's baked-in value
+        # (m130_acados_model.py::tau_servo_val == 0.015, mirrored by
+        # SOLVER_TAU_SERVO_S in PX4 RocketMPC.cpp). rocket_6dof_sim.py's
+        # _apply_rocket_properties() later merges any YAML-provided
+        # actuator.tau_servo over this default, so rockets modelling a
+        # different physical servo (e.g. Gehad1: 0.03) still win — this
+        # just ensures the fallback matches the deployed solver.
         actuator_config = {
-            'tau_servo': 0.05,
+            'tau_servo': 0.015,
             'delta_max': np.deg2rad(15.0),   # 15 deg -> rad
             'delta_min': np.deg2rad(-15.0),  # -15 deg -> rad
             'rate_max': np.deg2rad(300.0),   # 300 deg/s -> rad/s
@@ -1843,7 +1850,10 @@ class RocketDataLoader:
             actuator_config['delta_max'] = np.deg2rad(delta_max_deg)
             actuator_config['delta_min'] = np.deg2rad(-delta_max_deg)
             actuator_config['rate_max'] = np.deg2rad(fin.get('delta_dot_max_deg_s', 300.0))
-            actuator_config['tau_servo'] = 0.05  # Default servo time constant
+            # Default matches SOLVER_TAU_SERVO_S (0.015s) baked into the
+            # acados MPC solver. YAML's actuator.tau_servo (if present)
+            # overrides this via _apply_rocket_properties() downstream.
+            actuator_config['tau_servo'] = 0.015
 
         # Build safety config
         # Note: q_alpha_max is loaded from rocket_properties.yaml (single source of truth)

@@ -38,7 +38,15 @@ class ActuatorModel:
     def __init__(self, config):
         """Initialize actuator model from config dict."""
 
-        self.tau_servo = config.get('tau_servo', 0.05)  # s (tservo)
+        # Default matches the value baked into the acados MPC solver
+        # (m130_acados_model.py::tau_servo_val == 0.015, mirrored by
+        # SOLVER_TAU_SERVO_S in PX4 RocketMPC.cpp). A mismatch between
+        # the simulator plant and the solver's internal servo model
+        # causes the MPC's predicted fin dynamics to diverge from what
+        # the plant actually does, which silently degrades tracking.
+        # Configs that model a different physical servo MUST set
+        # `tau_servo` explicitly in their YAML (e.g. Gehad1: 0.03).
+        self.tau_servo = config.get('tau_servo', 0.015)  # s (tservo)
         if not np.isfinite(self.tau_servo):
             raise ValueError(f"tau_servo must be finite, got {self.tau_servo}")
         if self.tau_servo <= 0:
