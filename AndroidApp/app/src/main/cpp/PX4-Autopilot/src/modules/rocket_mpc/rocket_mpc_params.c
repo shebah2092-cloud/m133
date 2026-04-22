@@ -78,19 +78,6 @@ PARAM_DEFINE_FLOAT(ROCKET_T_CTRL, 0.5f);
 PARAM_DEFINE_FLOAT(ROCKET_XTRGT, 2600.0f);
 
 /**
- * Target crossrange offset
- *
- * Lateral offset perpendicular to bearing (positive = right).
- *
- * @unit m
- * @min -50000.0
- * @max 50000.0
- * @decimal 0
- * @group Rocket MPC
- */
-PARAM_DEFINE_FLOAT(ROCKET_YTRGT, 0.0f);
-
-/**
  * Target altitude AGL
  *
  * Target altitude above launch site (target_alt - launch_alt).
