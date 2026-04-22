@@ -368,9 +368,29 @@ def _analyze_servo_tracking(hil_data: dict) -> dict:
     cmd_rad = np.column_stack([hil_data["fin_cmd_1"], hil_data["fin_cmd_2"],
                                hil_data["fin_cmd_3"], hil_data["fin_cmd_4"]])
 
+    # نحسب MAE/P95 فقط على الخطوات التي fin_source == "can" (فيدباك حيّ)
+    # — خطوات hold/cmd/abort تحتوي على fin_act مُطابق للأمر (err=0) أو
+    # قديم، ما يُلوّث إحصاء أداء العتاد الحقيقي.
+    # load_csv يضع القيم النصية في "_str_fin_source" وأصفاراً في "fin_source"
+    # (لأن float("can") يرفع) — نُفضّل النسخة النصية.
+    fin_source = hil_data.get("_str_fin_source") or hil_data.get("fin_source")
+    if fin_source is not None and len(fin_source) == n:
+        can_mask = np.asarray(
+            [str(s).strip() == "can" for s in fin_source], dtype=bool
+        )
+    else:
+        can_mask = np.ones(n, dtype=bool)
+
     # خطأ التتبع: fin_act يجب أن يتبع fin_cmd مع تأخير العتاد الفيزيائي
     err_deg = np.abs(np.degrees(act_rad - cmd_rad))
     max_err_per_step = np.max(err_deg, axis=1)
+    can_steps = int(can_mask.sum())
+    if can_steps > 0:
+        tracked_err = max_err_per_step[can_mask]
+    else:
+        # لا توجد خطوات can (جلسة انتهت في grace أو abort) — نُعيد تقريراً
+        # شفافاً يوضح السبب بدل إحصاءات مضلِّلة.
+        tracked_err = max_err_per_step
 
     # معلومات CAN (للعرض فقط — لا يُستخدم في البوابة)
     can_info = {}
@@ -386,10 +406,11 @@ def _analyze_servo_tracking(hil_data: dict) -> dict:
     result = {
         "available": True,
         "total_steps": n,
-        "tracking_mae_deg": float(np.mean(max_err_per_step)),
-        "tracking_p95_deg": float(np.percentile(max_err_per_step, 95)),
-        "tracking_p99_deg": float(np.percentile(max_err_per_step, 99)),
-        "tracking_max_deg": float(np.max(max_err_per_step)),
+        "can_steps": can_steps,
+        "tracking_mae_deg": float(np.mean(tracked_err)),
+        "tracking_p95_deg": float(np.percentile(tracked_err, 95)),
+        "tracking_p99_deg": float(np.percentile(tracked_err, 99)),
+        "tracking_max_deg": float(np.max(tracked_err)),
     }
     result.update(can_info)
     return result

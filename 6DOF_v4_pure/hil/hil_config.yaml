@@ -7,14 +7,9 @@ target:
   serial:
     device: /dev/ttyACM0
     baud: 921600
-clock:
-  mode: realtime
-  max_dropped_msgs: 10
 timing:
   enabled: true
-  deadline_us: 20000
-  warn_us: 10000
-  sample_hz: 50
+  deadline_us: 20000      # بوابة: خطوات MPC > هذه القيمة تُعدّ deadline misses
 # ─── إعدادات التسليح والـ warm-up ──────────────────────────────────────────
 # الجسر يُرسل أمر ARM بشكل متكرر وينتظر أول رسالة HIL_ACTUATOR_CONTROLS
 # من PX4 — هذا يعني PX4 سلّم نفسه ويُحكم وهو جاهز للطيران.
@@ -28,6 +23,8 @@ warmup:
   hitl_param_timeout_s: 5.0 # مهلة انتظار PARAM_VALUE المؤكد (على قناة 5760)
   clear_flight_termination: true  # إرسال DO_FLIGHTTERMINATION=0 قبل ARM
   preflight_reset: true     # force-stop للتطبيق + إعادة إعداد adb reverse/forward قبل بدء الجسر
+  abort_on_no_actuator: true  # افشل صراحة إن لم يصل HIL_ACTUATOR_CONTROLS خلال warm-up
+                              # (مؤشر على SYS_HITL غير مُفعَّل أو simulator_mavlink ساقط)
 # ─── إعدادات خاصة بـ HIL ──────────────────────────────────────────────────
 # HIL يعمل في closed_loop فقط: مسار الديناميكا = زاوية السيرفو المقاسة
 # (SRV_FB) → المحاكاة مباشرة. نموذج Python السيرفو مُعطَّل لتفادي مضاعفة
@@ -52,7 +49,8 @@ hil:
   servo_auto_zero: true                 # تمكين المعايرة التلقائية
   servo_zero_settle_s: 4.0              # زمن استقرار قبل العيّنات (ثانية)
   servo_zero_sample_s: 2.0              # زمن جمع العيّنات (ثانية)
-  servo_zero_max_deg: 30.0              # حد أقصى لانحراف مقبول؛ أكبر = خطأ hardware
+  servo_zero_max_deg: 10.0              # حد أقصى لانحراف مقبول؛ أكبر = خطأ hardware
+                                        # (انحراف >10° يُرفض تلقائياً — راجع تركيب الزعنفة)
 scenario:
   sim_config: config/6dof_config_advanced.yaml
   duration_s: 500.0
