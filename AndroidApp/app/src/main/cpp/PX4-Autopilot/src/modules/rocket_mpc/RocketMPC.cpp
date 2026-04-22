@@ -556,12 +556,16 @@ void RocketMPC::Run()
 					 lpos.ref_lat, lpos.ref_lon, (double)lpos.ref_alt);
 
 			} else {
-				// lpos ref not yet available — use param as fallback
-				_actual_launch_alt_msl = _param_launch_alt.get();
-				_launch_alt_captured = true;
-				_sensor.set_gps_origin(0.0, 0.0, (double)_actual_launch_alt_msl);
-				PX4_WARN("lpos ref not available at arm — using param launch_alt=%.1f",
-					 (double)_actual_launch_alt_msl);
+				// lpos ref not yet available — DO NOT fall back to
+				// _param_launch_alt. A stale / wrong-location param value
+				// (default 1200 m) would drive MHE's measurement model
+				// wildly off (`gps_z = h·H_SCALE + launch_alt`), saturate
+				// the `h` state at its lower bound and silently kill
+				// `quality`.  Leave `_launch_alt_captured = false` so the
+				// pre-launch loop keeps retrying on each cycle, and the
+				// launch-detection baro fallback below can anchor on the
+				// real baro reading if lpos never becomes global.
+				PX4_WARN("lpos ref not available at arm — MHE will wait for lpos or baro capture");
 			}
 
 		} else {
@@ -684,6 +688,34 @@ void RocketMPC::Run()
 			PX4_WARN(">>> LAUNCH DETECTED <<<  ax=%.1f m/s2", (double)ax);
 			mavlink_log_critical(&_mavlink_log_pub, "LAUNCH DETECTED ax=%.1f", (double)ax);
 
+			// Baro-proxy capture of launch altitude.
+			//
+			// `_launch_alt_captured` is normally set from GPS (raw sensor_gps
+			// in real flight, lpos.ref_alt in HITL/SITL) during arming or the
+			// pre-launch loop above.  If neither source ever produced a valid
+			// reading — e.g. commander's GPS arming gate was bypassed, or the
+			// pre-launch window was too short — the baro reading is the next
+			// best anchor for `launch_alt`: it is a real physical measurement
+			// (max ±30 m QNH/ISA error) instead of the `ROCKET_L_ALT`
+			// parameter default (1200 m, frequently off by hundreds of meters
+			// from the actual field elevation).
+			//
+			// Using baro here also makes the stage-0 baro residual identically
+			// zero: MHE's baro model is `y = h·H_SCALE + launch_alt` and we
+			// seed `h = 0` below, so y_predicted = launch_alt = baro_at_launch.
+			if (!_launch_alt_captured) {
+				if (_sensor.baro_fresh(now) && PX4_ISFINITE(air.baro_alt_meter)) {
+					_actual_launch_alt_msl = air.baro_alt_meter;
+					_launch_alt_captured   = true;
+					PX4_WARN("Launch alt captured from BARO=%.1fm (no GPS at arm/pre-launch)",
+						 (double)_actual_launch_alt_msl);
+
+				} else {
+					PX4_ERR("Launch detected but neither GPS nor baro available for launch_alt "
+						"— MHE will stay frozen for this flight");
+				}
+			}
+
 			// Initialize MHE with current state
 			double x0_mhe[MHE_NX] = {};
 			float V0 = sqrtf(lpos.vx * lpos.vx + lpos.vy * lpos.vy + lpos.vz * lpos.vz);
@@ -805,7 +837,15 @@ void RocketMPC::Run()
 			_baro_stale_warned = false;
 		}
 
-		if (smeas.valid) {
+		// Gate MHE ingestion on `_launch_alt_captured`: without a valid
+		// launch altitude, the `p[8]` parameter would have no meaningful
+		// value and the measurement model would diverge from reality (see
+		// the launch-detection baro fallback and the HITL lpos branch).
+		// If both GPS and baro failed us, MHE stays frozen and the
+		// MPC↔EKF2 blend falls back to EKF2 automatically via the
+		// `quality = 0` path — safer than feeding the solver a 1200 m
+		// constant offset on every observation.
+		if (smeas.valid && _launch_alt_captured) {
 			_mhe.push_measurement(t, smeas.y);
 
 			// Update actual fin positions (first-order lag) BEFORE passing to MHE.
@@ -849,8 +889,11 @@ void RocketMPC::Run()
 			mhe_p[5] = (double)Ixx;
 			mhe_p[6] = (double)Iyy;
 			mhe_p[7] = (double)Izz;
-			// Use actual captured altitude MSL (not hardcoded param) to match baro/GPS observations
-			mhe_p[8] = (double)(_launch_alt_captured ? _actual_launch_alt_msl : _param_launch_alt.get());
+			// Captured from GPS (arm / pre-launch) or baro (launch detection).
+			// The push is gated on `_launch_alt_captured` above, so this value
+			// is always a real sensor measurement — never the `ROCKET_L_ALT`
+			// parameter default.
+			mhe_p[8] = (double)_actual_launch_alt_msl;
 			_mhe.push_params(t, mhe_p);
 		}
 
