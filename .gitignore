@@ -68,11 +68,18 @@ AndroidApp/**/.gradle/
 *.jks
 
 # ============================================================
-# PX4-Autopilot (large nested repo & build artifacts)
+# Nested git repositories
 # ============================================================
-# Nested git repositories (excluded entirely)
-AndroidApp/app/src/main/cpp/PX4-Autopilot/
 AndroidApp/app/src/main/cpp/libusb_src/
+
+# ============================================================
+# PX4-Autopilot: include source, exclude build & large binaries
+# ============================================================
+AndroidApp/app/src/main/cpp/PX4-Autopilot/build/
+AndroidApp/app/src/main/cpp/PX4-Autopilot/docs/
+AndroidApp/app/src/main/cpp/PX4-Autopilot/Tools/setup/xtensa-*
+AndroidApp/app/src/main/cpp/PX4-Autopilot/**/*.tar.xz
+AndroidApp/app/src/main/cpp/PX4-Autopilot/**/*.tar.gz
 
 # ============================================================
 # acados generated code & build

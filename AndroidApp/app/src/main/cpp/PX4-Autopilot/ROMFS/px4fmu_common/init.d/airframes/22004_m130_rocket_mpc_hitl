@@ -1,0 +1,41 @@
+#!/bin/sh
+#
+# @name M130 Rocket MPC HITL  (MPC+MHE via acados + XQPOWER CAN servos)
+#
+# @type Rocket
+# @class Rocket
+#
+# @maintainer Rocket GNC Team
+#
+# HITL setup for MicoAir H743 + XQPOWER CAN servos:
+#   Physics engine : 6DOF_v4_pure on PC  (propulsion + aerodynamics + mass model)
+#   Controller     : PX4 rocket_mpc on real H743  (MPC + MHE → xqpower_can → servos)
+#   Protocol       : MAVLink HIL over USB serial
+#   Runner         : 6DOF_v4_pure/rocket_6dof_sim.py
+#
+# Parameters tuned for rocket_M130_v01_CFD68:
+#   mass_full=39.5 kg, mass_dry=27.0 kg
+#   Launch: 16.457°N 44.115°E  alt=1200 m MSL
+#
+
+. ${R}etc/init.d/rc.rocket_defaults
+
+# ---- Select MPC controller ----
+set ROCKET_APP rocket_mpc
+
+# HIL mode — all sensor data comes from 6DOF sim via USB serial
+param set SYS_HITL 1
+
+# ---- Rocket MPC parameters ----
+param set ROCKET_T_CTRL      0.2
+param set ROCKET_XTRGT   3000.0
+param set ROCKET_YTRGT      0.0
+param set ROCKET_GND_TEST  0
+
+# ---- XQPOWER CAN servo parameters ----
+param set XQCAN_ENABLE     1
+param set XQCAN_LIMIT     20.0    # ±20 deg (matches MPC fin limit)
+param set XQCAN_REV       0
+
+# Stop pwm_out_sim — rocket_mpc publishes actuator_outputs_sim directly.
+pwm_out_sim stop

@@ -1,0 +1,61 @@
+#!/bin/sh
+#
+# @name M130 Rocket MPC Real Sensors (MicoAir H743 + XQPOWER CAN servos)
+#
+# @type Rocket
+# @class Rocket
+#
+# @maintainer Rocket GNC Team
+#
+# Real-flight setup for MPC+MHE via acados:
+#   IMU  : BMI088 + BMI270 (SPI)
+#   Baro : DPS310 (I2C)
+#   Mag  : IST8310 (I2C)
+#   Servos: XQPOWER CAN
+#
+# Parameters tuned for rocket_M130_v01_CFD68:
+#   mass_full=39.5 kg, mass_dry=27.0 kg, diameter=130 mm
+#   Launch: 16.457°N 44.115°E  alt=1200 m MSL
+#
+
+. ${R}etc/init.d/rc.rocket_defaults
+
+# ---- Select MPC controller ----
+set ROCKET_APP rocket_mpc
+
+# Real hardware — use onboard sensors, NOT simulation
+param set SYS_HITL 0
+
+# Override simulated sensors from rc.rocket_defaults — use real hardware
+param set SENS_EN_GPSSIM 0
+param set SENS_EN_BAROSIM 0
+param set SENS_EN_MAGSIM 0
+
+# ---- Magnetometer — IST8310 on MicoAir H743 ----
+param set EKF2_MAG_TYPE    6    # init-only
+param set SYS_HAS_MAG      1
+param set EKF2_MAG_ACCLIM  30.0
+
+# ---- Arming checks for rocket (no RC) ----
+param set COM_RC_IN_MODE 4
+param set COM_ARM_WO_GPS 1
+param set COM_ARM_EKF_POS 0
+param set COM_ARM_EKF_VEL 0
+param set COM_ARM_EKF_HGT 0
+
+# ---- Battery (6S LiPo, MicoAir H743 voltage divider) ----
+param set BAT1_N_CELLS 6
+param set BAT1_V_DIV 74.74
+
+# ---- Rocket MPC parameters ----
+param set-default ROCKET_T_CTRL      0.2
+
+# Target position in NED (m from launch point)
+param set-default ROCKET_XTRGT   3000.0   # North
+param set-default ROCKET_YTRGT      0.0   # East
+
+# Fin deflection limit is baked into the acados solver (20° = 0.349 rad).
+# To change it, modify m130_ocp_setup.py::delta_max and regenerate the solver.
+
+# Ground test mode (0=flight, 1=ground test)
+param set-default ROCKET_GND_TEST  0
