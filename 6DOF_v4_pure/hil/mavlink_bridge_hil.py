@@ -90,13 +90,15 @@ def _x25_crc(data: bytes, crc: int = 0xFFFF) -> int:
     return crc
 
 
+_seq_counter = [0]
+
+
 def _pack_v2(msg_id: int, payload: bytes, crc_extra: int,
-             sys_id: int = SYS_ID, comp_id: int = COMP_ID,
-             seq: list = [0]) -> bytes:
+             sys_id: int = SYS_ID, comp_id: int = COMP_ID) -> bytes:
     trimmed = payload.rstrip(b"\x00")
     tlen = len(trimmed)
-    seq_num = seq[0] & 0xFF
-    seq[0] = (seq[0] + 1) & 0xFF
+    seq_num = _seq_counter[0] & 0xFF
+    _seq_counter[0] = (_seq_counter[0] + 1) & 0xFF
     header = struct.pack(
         "<BBBBBBBHB",
         MAVLINK_STX_V2, tlen, 0, 0, seq_num,
@@ -427,6 +429,8 @@ class HILBridge:
         self.require_all_servos_online = bool(
             hil_cfg.get("require_all_servos_online", False)
         )
+        self.servo_safety_breach_limit = 50
+        self._servo_safety_breach = 0
         self.servo_auto_zero = bool(hil_cfg.get("servo_auto_zero", True))
         self.servo_zero_settle_s = float(hil_cfg.get("servo_zero_settle_s", 4.0))
         self.servo_zero_sample_s = float(hil_cfg.get("servo_zero_sample_s", 2.0))
@@ -942,7 +946,10 @@ class HILBridge:
             # ─── اختيار زاوية الزعنفة للمحاكاة (closed_loop دائماً) ────
             # الزاوية المقاسة تقود الأيروديناميكا. use_actuator_dynamics
             # مُعطَّل في sim_cfg → لا نموذج Python إضافي.
-            fb_useable = fb_fresh and all_online
+            fb_useable = fb_fresh and (
+                not self.require_all_servos_online
+                or all_online
+            )
             within_grace = t * 1000.0 < self.servo_feedback_grace_ms
             abort_threshold_us = self.servo_feedback_abort_ms * 1000.0
             stale_beyond_abort = (
@@ -977,8 +984,14 @@ class HILBridge:
             if fb_fresh and all_online:
                 err_rad = float(np.max(np.abs(fb_rad - self._last_controls[:4])))
                 if err_rad > 0.175:
-                    self._servo_safety_breach = getattr(
-                        self, "_servo_safety_breach", 0) + 1
+                    self._servo_safety_breach += 1
+                    if self._servo_safety_breach >= self.servo_safety_breach_limit:
+                        print(f"\n[HIL] ABORT: sustained servo tracking error "
+                              f">{np.degrees(0.175):.0f}° for "
+                              f"{self._servo_safety_breach} consecutive steps "
+                              f"at t={t:.3f}s")
+                        self._fin_source = "abort"
+                        break
                 else:
                     self._servo_safety_breach = 0
 
@@ -1253,7 +1266,7 @@ class HILBridge:
         if p is None:
             return
         # الاصطلاح: array_id=1, name="SRV_FB"
-        if p["array_id"] != 1 and not p["name"].upper().startswith("SRV_FB"):
+        if p["array_id"] != 1 or not p["name"].upper().startswith("SRV_FB"):
             return
         data = p["data"]
         cmd_deg = np.array(data[0:4], dtype=float)
