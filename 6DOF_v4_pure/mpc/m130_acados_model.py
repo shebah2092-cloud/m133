@@ -36,9 +36,17 @@ from acados_template import AcadosModel
 
 def create_m130_model(launch_alt_val=1500.0, tau_servo_val=0.015,
                       mass_full_val=12.74, mass_dry_val=11.11,
-                      Ixx_full_val=0.0353, Ixx_dry_val=0.0353,
-                      Iyy_full_val=1.0567, Iyy_dry_val=1.0567,
-                      Izz_full_val=1.0567, Izz_dry_val=1.0567,
+                      # Default inertias match
+                      # data/rocket_models/Qabthah1/rocket_properties.yaml
+                      # (inertia_full_kgm2 / inertia_dry_kgm2). Any caller
+                      # passing a rocket-specific mass_properties_model
+                      # overrides these at OCP construction time; the
+                      # defaults only matter when the model is instantiated
+                      # standalone (e.g. unit tests, solver regeneration
+                      # without a project config).
+                      Ixx_full_val=0.0389, Ixx_dry_val=0.0356,
+                      Iyy_full_val=1.1651, Iyy_dry_val=1.0789,
+                      Izz_full_val=1.166,  Izz_dry_val=1.0779,
                       xbc_max_val=0.0):
     model = AcadosModel()
     model.name = "m130_rocket"
