@@ -190,12 +190,12 @@ LosResult compute_los(float x_pos, float y_pos, float altitude,
 // --- Weight scheduling ---
 void compute_weights(float t, float gamma, float gamma_ref_prev,
                      float phi, float alpha, float q_rate, float x_pos,
-                     float burn_time, float target_x, float cruise_progress,
+                     float burn_time, float t_tail, float target_x, float cruise_progress,
                      bool cruise_alt_set, float cruise_alt_target, float H_SCALE,
                      float W[12], float W_e[9]) {
     bool is_boost = (t < burn_time);
-    float t_tailoff_start = burn_time - 1.0f;
-    float t_tailoff_end = burn_time + 2.0f;
+    float t_tailoff_start = burn_time - t_tail;
+    float t_tailoff_end = burn_time + 2.0f * t_tail;
     bool in_tailoff = (t_tailoff_start < t) && (t < t_tailoff_end);
 
     float gamma_base, q_w, r_w, de_rate_w, dr_rate_w, alpha_w_boost;
@@ -410,7 +410,7 @@ int main(int argc, char **argv) {
         // 3. Weights
         float W_c[12], W_e_c[9];
         compute_weights(t, gamma, los.gamma_ref, phi, alpha, q_rate, x_pos,
-                       burn_time, target_x, cruise_progress,
+                       burn_time, t_tail, target_x, cruise_progress,
                        cruise_alt_set_v, cruise_alt_target_v, H_SCALE,
                        W_c, W_e_c);
         const JVal *W_exp = exp->get_arr("W");

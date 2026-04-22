@@ -103,8 +103,11 @@ void MpcController::_compute_weights(float t, float gamma, float gamma_ref_prev,
 				     double W[MPC_NY], double W_e[MPC_NYN])
 {
 	const bool is_boost = (t < _cfg.burn_time);
-	const float t_tailoff_start = _cfg.burn_time - 1.0f;
-	const float t_tailoff_end   = _cfg.burn_time + 2.0f;
+	// Weight-blend window scales with t_tail so the transition tracks the
+	// thrust curve in get_params() (thrust tail-off spans exactly t_tail).
+	// Post-burnout the window is 2*t_tail to let weights settle smoothly.
+	const float t_tailoff_start = _cfg.burn_time - _cfg.t_tail;
+	const float t_tailoff_end   = _cfg.burn_time + 2.0f * _cfg.t_tail;
 	const bool in_tailoff = (t_tailoff_start < t) && (t < t_tailoff_end);
 
 	float gamma_base, q_w, r_w, de_rate_w, dr_rate_w, alpha_w_boost;
