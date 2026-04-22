@@ -981,8 +981,16 @@ class HILBridge:
             # ─── تحقق سلامة: خطأ تتبع > 10° مستدام → فشل سيرفو محتمل ────
             # المرجع المطلوب من العتاد هو أمر MPC الخام
             # (`_last_controls[:4]`)، بصرف النظر عمّا يُحقن في الأيروديناميكا.
-            if fb_fresh and all_online:
-                err_rad = float(np.max(np.abs(fb_rad - self._last_controls[:4])))
+            # نفحص فقط القنوات الـ online لتفادي false-positive من قنوات
+            # offline التي قد تحتوي على قيم قديمة/صفرية.
+            if fb_useable:
+                err_all = np.abs(fb_rad - self._last_controls[:4])
+                online_mask = self._servo_online_mask & 0x0F
+                if all_online:
+                    err_rad = float(np.max(err_all))
+                else:
+                    online_ch = [i for i in range(4) if online_mask & (1 << i)]
+                    err_rad = float(np.max(err_all[online_ch])) if online_ch else 0.0
                 if err_rad > 0.175:
                     self._servo_safety_breach += 1
                     if self._servo_safety_breach >= self.servo_safety_breach_limit:
