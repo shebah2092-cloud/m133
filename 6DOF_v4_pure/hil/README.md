@@ -1,41 +1,71 @@
 # HIL — Hardware-In-the-Loop (M130)
 
-مجلد اختبار HIL **مستقل تماماً** عن PIL. يُشغّل محاكاة 6DOF على اللابتوب،
-ويُرسل بيانات حسّاسات وهمية للهاتف عبر TCP، بينما **السيرفوهات حقيقية**
-متصلة عبر CAN (Waveshare USB_CAN_A → 4 سيرفوهات XQPOWER).
+> **ملاحظة مهمة عن حالة التنفيذ الحالية:** هذا الإصدار يعمل فعلياً في وضع
+> **مراقبة العتاد (monitor-only)**: ديناميكا المحاكاة لا تستخدم الزاوية
+> المقاسة من السيرفوهات الحقيقية، بل تستخدم أمر MPC الخام ممرّراً عبر
+> نموذج سيرفو Python من الدرجة الأولى (τ=15ms). فيدباك CAN يُستخدم
+> **للتسجيل والرصد وفحص السلامة فقط**، وليس لحساب الأيروديناميكا.
+>
+> الحقن الحقيقي للزاوية المقاسة في الديناميكا (HIL مغلق الحلقة) مُخطَّط
+> لمرحلة لاحقة — انظر قسم "المسار المستقبلي" في نهاية هذا الملف.
 
-## الفرق الجوهري عن PIL
+مجلد اختبار HIL مستقل عن PIL: يُشغّل محاكاة 6DOF على اللابتوب، ويُرسل
+حسّاسات اصطناعية للهاتف عبر TCP 4560، بينما MPC يعمل على هاتف Android
+بـ PX4 الحقيقي (C++)، والسيرفوهات الحقيقية متصلة عبر CAN
+(Waveshare USB_CAN_A → 4 سيرفوهات XQPOWER).
 
-في PIL: الأمر من MPC يذهب للمحاكاة مباشرة (δ مثالي).
+## ما يقيسه هذا الاختبار فعلياً
 
-في HIL: **حلقة مغلقة ميكانيكياً**:
+1. **صحّة MPC الـ C++ على PX4** في دورة طيران كاملة مقابل baseline Python.
+2. **هل العتاد يتّبع الأوامر؟** — فيدباك CAN يُقارن مع الأمر كفحص سلامة
+   (tracking error، online_mask، tx_fail، latency).
+3. **سلامة stack الاتصالات** — MAVLink, TCP, debug_array, CAN transport.
+
+## ما لا يقيسه هذا الاختبار (في الوضع الحالي)
+
+- **أثر ديناميكا السيرفو الفعلية على المسار** — المسار محسوب من نموذج
+  Python، لا من العتاد. لذا backlash، slew، CAN latency، torque ceiling
+  غير ظاهرة في الأيروديناميكا.
+- عتبة `servo_tracking` في `hil_config.yaml` تُقارن مخرج **نموذج Python**
+  بالأمر (ليس العتاد). لا تفشل عملياً ولا تكشف أخطاء hardware.
+
+لقياس أداء العتاد فعلياً، راجع أعمدة `fin_can_*` في
+`results/hil_flight_servo.csv` (هذه الزاوية الحقيقية المقاسة).
+
+## تدفق البيانات الفعلي (كما هو في الكود)
 
 ```
-MPC (Android/PX4)
-  ↓ actuator_servos
-xqpower_can driver
-  ↓ CAN frames (XQPOWER protocol)
+PX4 MPC (Android)
+  ↓ uORB: actuator_outputs_sim  (أو actuator_servos)
+XqpowerCan driver  [100Hz]
+  ↓ CAN TX (XQPOWER protocol, 500 kbps)
 USB_CAN_A (CH340, VID=0x1A86)
   ↓
 4 سيرفوهات حقيقية
-  ↓ قراءة الزاوية الفعلية (encoder)
-CAN feedback frames
+  ↓ PDO auto-report (كل 50ms، ≈20Hz/servo)
+USB-Serial RX ← CAN RX
+  ↓ XqpowerCan يجمّع ويَنشر
+debug_array (name="SRV_FB", id=1)  [≤100Hz]
+  ↓ MAVLink DEBUG_FLOAT_ARRAY (TCP 5760)
+Python mavlink_bridge_hil.py
   ↓
-xqpower_can → debug_array (SRV_FB, id=1)
-  ↓ DEBUG_FLOAT_ARRAY stream @ 20Hz
-MAVLink (TCP 5760)
-  ↓
-mavlink_bridge_hil ← يقرأ fb_deg[0..3]
-  ↓
-Simulation يستخدم الزاوية المقاسة بدل الأمر
+        ┌─────────────────────────────────┐
+        │                                 │
+   [مسار الرصد فقط]                   [مسار الديناميكا]
+   _servo_fb_rad ↓                    _last_controls[:4] (أمر MPC)
+   • تسجيل CSV (fin_can_*)              ↓
+   • فحص خطأ تتبع (10° حد السلامة)     ActuatorModel Python (τ=15ms)
+   • online_mask، tx_fail               ↓
+   • معايرة صفر                        aero forces + 6DOF RK4
+   • لا يُحقن في الديناميكا             ↓
+                                   HIL_STATE_QUATERNION, HIL_SENSOR
+                                        ↓ TCP 4560
+                                      PX4 EKF2 → MPC التالي
 ```
-
-**النتيجة**: ديناميكا السيرفو الحقيقية (slew rate, backlash, CAN latency)
-تؤثر فعلياً على مسار المحاكاة.
 
 ## المتطلبات
 
-- الهاتف: Samsung S23 Ultra مع `com.ardophone.px4v17`
+- الهاتف: Android (S23 Ultra مُختبر) مع `com.ardophone.px4v17`
 - Waveshare USB_CAN_A (CH340) عبر USB-C OTG hub
 - 4 سيرفوهات XQPOWER على CAN bus (عناوين 1..4)
 - مصدر تغذية للسيرفوهات (12V/24V حسب النوع)
@@ -68,49 +98,76 @@ python hil_runner.py --baseline-only
 
 ## المخرجات
 
-- `results/hil_flight.csv` — مسار الرحلة (الحالة الديناميكية)
-- `results/hil_flight_servo.csv` — **جوهر HIL**: سجلّ cmd/fb/err لكل سيرفو
-- `results/hil_timing.csv` — توقيت MHE/MPC/Cycle
-- `results/baseline_flight.csv` — المرجع (Python MPC على اللابتوب)
+- `results/hil_flight.csv` — مسار الرحلة (الحالة الديناميكية، fin angle
+  الذي دخل الأيروديناميكا هو مخرج نموذج Python لا العتاد).
+- `results/hil_flight_servo.csv` — سجلّ مراقبة العتاد: `cmd/fb/err` لكل
+  سيرفو، online_mask، tx_fail. **لقياس أداء العتاد الحقيقي استخدم هذا
+  الملف.**
+- `results/hil_timing.csv` — توقيت MHE/MPC/Cycle على PX4.
+- `results/baseline_flight.csv` — المرجع (Python MPC على اللابتوب، بدون
+  عتاد).
 
-## التحقق من عمل الفيدباك
+## التحقق من عمل مسار الرصد
 
 بعد تشغيل HIL، يجب أن ترى:
 
 ```
-[HIL] Servo feedback: N frames, fallback_to_cmd=K steps, online_mask=0x0F, tx_fail=0
+[HIL] Servo feedback: N frames, online_mask=0x0F, tx_fail=0
 ```
 
-- `N > 0` — الفيدباك يصل
-- `online_mask=0x0F` — جميع السيرفوهات الأربعة متصلة
-- `fallback_to_cmd` قليل — المحاكاة استخدمت الفيدباك بأغلب الخطوات
+- `N > 0` — فيدباك CAN يصل (مسار الرصد يعمل).
+- `online_mask=0x0F` — جميع السيرفوهات الأربعة متصلة.
+- `tx_fail=0` — لا فشل إرسال CAN.
 
-إذا `N=0`: تحقق من:
-1. `adb forward tcp:5760` مُفعّل
-2. `xqpower_can` يعمل: `adb logcat | grep -i xqpower`
-3. CAN متصل: `online_mask != 0`
+إذا `N=0`:
+1. `adb forward tcp:5760` مُفعّل؟
+2. `xqpower_can` يعمل؟ `adb logcat | grep -i xqpower`
+3. CAN متصل فعلياً؟ `online_mask != 0`
+
+> ملاحظة: حتى لو `N=0`، الطيران يكتمل لأن الديناميكا لا تعتمد على الفيدباك
+> في الوضع الحالي. ستَرى فقط أن أعمدة `fin_can_*` في CSV فارغة/صفرية.
 
 ## الإعدادات المهمة في `hil_config.yaml`
 
 ```yaml
 hil:
-  use_servo_feedback: true              # استخدم fb_deg بدل الأمر
-  servo_feedback_timeout_ms: 200.0      # timeout قبل fallback للأمر
-  require_all_servos_online: false      # إن true: يوقف إذا أحد السيرفوهات offline
+  use_servo_feedback: true              # تمكين مسار الرصد (تسجيل + سلامة)
+  servo_feedback_timeout_ms: 200.0      # يُعدّ قياس CAN قديماً بعد 200ms
+  require_all_servos_online: false      # true: يوقف إذا أي سيرفو offline
+  servo_auto_zero: true                 # معايرة صفر تلقائية قبل الطيران
 ```
+
+تبديل `use_servo_feedback: false` يُعطّل قراءة SRV_FB وتسجيلها — **لا
+يغيّر ديناميكا المحاكاة**.
 
 ## السلامة
 
 قبل أول تشغيل كامل:
-1. اختبر السيرفوهات على bench بدون حمل ميكانيكي
-2. تحقق من اتجاه الدوران عبر `XQCAN_REV` parameter
-3. تحقق من حدود الزوايا عبر `XQCAN_LIMIT`
-4. أبقِ مصدر الطاقة قابلاً للفصل السريع (E-stop)
+1. اختبر السيرفوهات على bench بدون حمل ميكانيكي.
+2. تحقق من اتجاه الدوران عبر `XQCAN_REV` parameter.
+3. تحقق من حدود الزوايا عبر `XQCAN_LIMIT`.
+4. أبقِ مصدر الطاقة قابلاً للفصل السريع (E-stop).
+
+## المسار المستقبلي (closed-loop HIL)
+
+الغرض الأصلي من HIL هو أن تؤثّر ديناميكا السيرفو الحقيقية على المسار.
+يتطلّب ذلك:
+
+1. حقن `_servo_fb_rad` (الزاوية المقاسة) في `_ctrl()` بدل `_last_controls[:4]`
+   (الأمر).
+2. تعطيل `use_actuator_dynamics` في الوضع closed-loop (لإلغاء نموذج
+   Python τ=15ms الوسيط).
+3. رفع معدل PDO auto-report من 50ms (20Hz) إلى 10ms (100Hz) في
+   `XqpowerCan.cpp`.
+4. تعديل عتبة `servo_tracking` لتُقارن `fin_can` بدل `fin_act`.
+5. معالجة timeout + emergency abort عند فقدان فيدباك > 500ms.
+
+خطة التنفيذ الكاملة موثّقة في تقرير مراجعة HIL المنفصل.
 
 ## الملفات
 
-- `mavlink_bridge_hil.py` — جسر MAVLink (يستقبل SRV_FB)
-- `hil_runner.py` — المشغّل الرئيسي (baseline + HIL + compare)
-- `hil_config.yaml` — الإعدادات
-- `results/` — المخرجات
-
+- `mavlink_bridge_hil.py` — جسر MAVLink (يستقبل sensors من sim، يُرسل
+  HIL_STATE_QUATERNION، يقرأ HIL_ACTUATOR_CONTROLS، يقرأ SRV_FB للرصد).
+- `hil_runner.py` — المشغّل الرئيسي (baseline + HIL + compare).
+- `hil_config.yaml` — الإعدادات.
+- `results/` — المخرجات.
