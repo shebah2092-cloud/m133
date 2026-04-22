@@ -124,7 +124,6 @@ private:
 	uORB::Publication<actuator_servos_s>   _actuator_servos_pub{ORB_ID(actuator_servos)};
 	uORB::Publication<rocket_gnc_status_s> _rocket_gnc_status_pub{ORB_ID(rocket_gnc_status)};
 	uORB::Publication<debug_vect_s>        _timing_debug_pub{ORB_ID(debug_vect)};
-	uORB::Publication<debug_array_s>       _srv_fb_pub{ORB_ID(debug_array)};  /* HITL synthetic SRV_FB (id=1) */
 
 
 	// ---------------------------------------------------------------
@@ -156,10 +155,6 @@ private:
 
 	// Tracked actual fin deflections (first-order lag filter)
 	float _de_act{0.0f}, _dr_act{0.0f}, _da_act{0.0f};
-
-	// Per-fin actual angles (first-order lag of _last_fins[], for synthetic SRV_FB in HITL)
-	float _last_fins_act[4]{0.0f, 0.0f, 0.0f, 0.0f};
-	hrt_abstime _last_srv_fb_pub_time{0};
 
 	// MHE-derived state cache (for logging & publish)
 	bool  _mhe_publishing{false};
