@@ -41,11 +41,31 @@ param set SYS_HAS_MAG      1
 param set EKF2_MAG_ACCLIM  30.0
 
 # ---- Arming checks for rocket (no RC) ----
+# Real flight REQUIRES a GPS fix and a converged EKF2 state estimate before
+# arming.  Without these, rocket_mpc cannot latch a valid launch origin or
+# seed the MHE, and the fins will fly open-loop from a wrong reference.
+#
+# COM_ARM_WO_GPS=0       : deny arming while EKF2 reports any GPS check fail.
+# EKF2_GPS_CHECK (bitmask):
+#     bit 0  = satellite count       (EKF2_REQ_NSATS)
+#     bit 2  = horizontal accuracy   (EKF2_REQ_EPH)
+#     bit 3  = vertical accuracy     (EKF2_REQ_EPV)
+#     bit 10 = GPS fix type (>= 3D)  (EKF2_REQ_FIX)
+#   Sum = 1 + 4 + 8 + 1024 = 1037.  rc.rocket_defaults sets this to 0 to keep
+#   developer-mode HITL/SITL permissive; real flight re-enables it here so
+#   COM_ARM_WO_GPS=0 is actually enforceable (GPS failures set the flag that
+#   estimatorCheck.cpp denies arming on).
+#
+# Lpos/vel/height convergence at arming time is governed by the thresholds
+# COM_POS_FS_EPH (5 m default) and COM_VEL_FS_EVH (1 m/s default); EKF2 must
+# publish vehicle_local_position with .xy_valid / .z_valid / .v_xy_valid /
+# .v_z_valid = true and EPH/EVH under those thresholds for commander's
+# estimatorCheck to pass.  The previously written COM_ARM_EKF_{POS,VEL,HGT}
+# params are not defined in current PX4 (legacy names from an older fork)
+# and were no-ops on this airframe; removed to avoid confusion.
 param set COM_RC_IN_MODE 4
-param set COM_ARM_WO_GPS 1
-param set COM_ARM_EKF_POS 0
-param set COM_ARM_EKF_VEL 0
-param set COM_ARM_EKF_HGT 0
+param set COM_ARM_WO_GPS 0
+param set EKF2_GPS_CHECK 1037
 
 # ---- Battery (6S LiPo, MicoAir H743 voltage divider) ----
 param set BAT1_N_CELLS 6
