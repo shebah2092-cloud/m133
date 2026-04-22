@@ -39,6 +39,15 @@ public:
 		_cfg.burn_time = burn_time;
 	}
 
+	// Keep the LOS copy of cruise_progress in sync with RocketMPC's config
+	// when ROCKET_CRUISE_P is edited at runtime. Without this setter,
+	// parameters_update() only updates the MPC side and LOS keeps the value
+	// captured at init(), so the dive onset in the guidance reference and
+	// the dive-window weights in the solver can drift out of sync.
+	void set_cruise_progress(float cruise_progress) {
+		_cfg.cruise_progress = cruise_progress;
+	}
+
 	LosResult compute(float x_pos, float y_pos, float altitude,
 			  float gamma_prev, float chi_prev,
 			  float t_flight, float dt);
