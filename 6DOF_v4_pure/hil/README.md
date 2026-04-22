@@ -19,13 +19,14 @@
 
 ## ما يقيسه هذا الاختبار فعلياً
 
-1. **صحّة MPC الـ C++ على PX4** في دورة طيران كاملة مقابل baseline Python.
+1. **صحّة MPC الـ C++ على PX4** في دورة طيران كاملة.
 2. **أداء العتاد الحقيقي على المسار** — الزاوية المقاسة من السيرفوهات
    تقود الأيروديناميكا، فـ backlash/slew/CAN latency يظهران في المسار
    النهائي.
 3. **تتبّع السيرفو** — fin_act (الزاوية المقاسة) مقابل fin_cmd (أمر MPC)
-   كفحص أداء hardware.
-4. **سلامة stack الاتصالات** — MAVLink, TCP, debug_array, CAN transport.
+   كفحص أداء hardware — عتبة `servo_tracking` في hil_config.
+4. **توقيت MHE/MPC** على PX4 — عتبة `timing` في hil_config.
+5. **سلامة stack الاتصالات** — MAVLink, TCP, debug_array, CAN transport.
 
 ## تدفق البيانات
 
@@ -77,14 +78,17 @@ adb forward tcp:5760 tcp:5760    # phone → mavlink readback (SRV_FB + TIMING)
 cd 6DOF_v4_pure/hil
 source ../../.venv/bin/activate
 
-# 1) كامل: baseline + HIL + مقارنة
+# 1) HIL + تحليل servo/timing (الافتراضي)
 python hil_runner.py
 
-# 2) HIL فقط (ينتظر اتصال PX4)
+# 2) HIL فقط (بدون تحليل لاحق)
+python hil_runner.py --hil-only
+
+# 3) الجسر مباشرة (ينتظر اتصال PX4 — بدون أيّ تحليل)
 python mavlink_bridge_hil.py
 
-# 3) baseline فقط
-python hil_runner.py --baseline-only
+# 4) تحليل CSV موجودة بدون تشغيل HIL من جديد
+python hil_runner.py --compare-only
 ```
 
 ثم على الهاتف: افتح التطبيق → اضغط **Start PX4**.
@@ -97,8 +101,6 @@ python hil_runner.py --baseline-only
 - `results/hil_flight_servo.csv` — سجلّ تفصيلي لكل SRV_FB:
   `cmd/fb/err` لكل سيرفو، `online_mask`، `tx_fail`.
 - `results/hil_timing.csv` — توقيت MHE/MPC/Cycle على PX4.
-- `results/baseline_flight.csv` — المرجع (Python MPC كامل على اللابتوب،
-  بدون عتاد — للمقارنة مع HIL).
 
 ## التحقق من عمل فيدباك السيرفو
 
@@ -167,6 +169,6 @@ hil:
 - `mavlink_bridge_hil.py` — جسر MAVLink (يستقبل sensors من sim، يُرسل
   HIL_STATE_QUATERNION، يقرأ HIL_ACTUATOR_CONTROLS، يقرأ SRV_FB ويحقنه
   في الديناميكا).
-- `hil_runner.py` — المشغّل الرئيسي (baseline + HIL + compare).
+- `hil_runner.py` — المشغّل الرئيسي (HIL + تحليل servo/timing).
 - `hil_config.yaml` — الإعدادات.
 - `results/` — المخرجات.

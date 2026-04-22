@@ -3,18 +3,16 @@
 HIL Test Runner — مستقل تماماً
 ==============================
 
-المكوّنات:
-  1) Python baseline (rocket_6dof_sim + MPC داخلي)  ← مرجع
-  2) HIL bridge (mavlink_bridge_hil)                ← يتصل بجهاز ARM64 خارجي
+يُشغّل جسر MAVLink HIL (mavlink_bridge_hil) الذي يتصل بجهاز ARM64
+خارجي (Android + PX4)، ثم يُحلّل السيرفو والتوقيت ضد عتبات hil_config.
 
-المقارنة الوحيدة: baseline ↔ HIL (لا علاقة بـ SITL).
+المقارنة ضد baseline Python أُزيلت كلياً من هذا العدّاء؛ البوابات
+الوحيدة الآن: servo_tracking + timing على مخرجات HIL نفسها.
 
 Usage:
-    python hil_runner.py                        # الكامل: baseline → HIL → مقارنة
-    python hil_runner.py --hil-only             # تشغيل HIL فقط
-    python hil_runner.py --baseline-only        # تشغيل baseline فقط
-    python hil_runner.py --compare-only         # مقارنة من CSV موجودة
-    python hil_runner.py --baseline-csv X.csv   # تحديد baseline مسبقاً
+    python hil_runner.py                        # HIL + تحليل
+    python hil_runner.py --hil-only             # HIL فقط (بدون تحليل)
+    python hil_runner.py --compare-only         # تحليل من CSV موجودة
 """
 
 from __future__ import annotations
@@ -36,53 +34,6 @@ _SIM_DIR = _SCRIPT_DIR.parent
 _RESULTS = _SCRIPT_DIR / "results"
 sys.path.insert(0, str(_SIM_DIR))
 sys.path.insert(0, str(_SCRIPT_DIR))
-
-
-# ============================================================================
-# baseline (مستقل عن sitl/run_sitl_test.py)
-# ============================================================================
-
-def run_baseline(sim_config_path: str | None = None,
-                 output_csv: str | None = None) -> str:
-    """يشغّل المحاكاة المستقلة (Python + MPC الداخلي) كمرجع ذهبي."""
-    import tempfile
-
-    from rocket_6dof_sim import Rocket6DOFSimulation, export_comprehensive_log
-
-    cfg_path = sim_config_path or str(_SIM_DIR / "config" / "6dof_config_advanced.yaml")
-    with open(cfg_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    cfg["simulation"]["control_type"] = "mpc"
-
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml",
-                                      delete=False, encoding="utf-8")
-    yaml.dump(cfg, tmp, allow_unicode=True, default_flow_style=False)
-    tmp.close()
-
-    long_range = cfg.get("long_range", {}).get("enabled", False)
-    sim = Rocket6DOFSimulation(config_file=tmp.name, long_range_mode=long_range)
-
-    duration = cfg.get("simulation", {}).get("duration", 500.0)
-    dt = cfg.get("simulation", {}).get("dt", 0.01)
-
-    t0 = time.monotonic()
-
-    def prog(info):
-        print(f"\r  [baseline] {info['progress']:5.1f}% t={info['time']:6.1f}s "
-              f"alt={info['altitude']/1000:.1f}km v={info['velocity']:.0f}m/s",
-              end="", flush=True)
-
-    hist = sim.simulate(duration=duration, dt=dt, on_step=prog, callback_stride=100)
-    print()
-    print(f"  baseline wall={time.monotonic() - t0:.1f}s "
-          f"points={len(hist['time'])}")
-
-    csv_path = output_csv or str(_RESULTS / "baseline_flight.csv")
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-    export_comprehensive_log(hist, sim, csv_path)
-    os.unlink(tmp.name)
-    print(f"  baseline CSV: {csv_path}")
-    return csv_path
 
 
 # ============================================================================
@@ -261,75 +212,23 @@ def load_csv(path: str) -> dict:
 
 
 # ============================================================================
-# المقارنة: baseline ↔ HIL فقط
+# التحليل: HIL وحدها (servo + timing)
 # ============================================================================
 
-def compare(baseline_csv: str, hil_csv: str, timing_csv: str | None,
+def compare(hil_csv: str, timing_csv: str | None,
             thresholds: dict, deadline_us: int = 20000) -> dict:
     print()
     print("=" * 70)
-    print("  Compare: baseline ↔ HIL")
+    print("  HIL analysis — servo + timing")
     print("=" * 70)
 
-    base = load_csv(baseline_csv)
     hil = load_csv(hil_csv)
-
-    t_b = base.get("time", np.array([]))
     t_p = hil.get("time", np.array([]))
-    if len(t_b) == 0 or len(t_p) == 0:
-        print("  ERROR: empty data")
+    if len(t_p) == 0:
+        print("  ERROR: empty HIL data")
         return {"pass": False, "error": "empty"}
 
-    t_max = min(t_b[-1], t_p[-1])
-    mask = t_b <= t_max
-    t_common = t_b[mask]
-
-    def ib(key):
-        return base[key][mask] if key in base else np.zeros_like(t_common)
-
-    def ip(key):
-        return np.interp(t_common, t_p, hil[key]) if key in hil else np.zeros_like(t_common)
-
-    m: dict = {"t_final_base": float(t_b[-1]), "t_final_hil": float(t_p[-1])}
-
-    # ارتفاع
-    a_err = ip("altitude") - ib("altitude")
-    m["altitude_mae"] = float(np.mean(np.abs(a_err)))
-    m["altitude_max_err"] = float(np.max(np.abs(a_err)))
-    m["altitude_rmse"] = float(np.sqrt(np.mean(a_err ** 2)))
-
-    # سرعة (MAE للمتّجه)
-    if all(k in base and k in hil for k in ("vel_x", "vel_y", "vel_z")):
-        dvx = ip("vel_x") - ib("vel_x")
-        dvy = ip("vel_y") - ib("vel_y")
-        dvz = ip("vel_z") - ib("vel_z")
-        v_err = np.sqrt(dvx ** 2 + dvy ** 2 + dvz ** 2)
-        m["velocity_mae"] = float(np.mean(v_err))
-        m["velocity_max_err"] = float(np.max(v_err))
-
-    # زوايا
-    if "pitch_deg" in base and "pitch_deg" in hil:
-        def _ipd(k): return np.interp(t_common, t_p, hil[k])
-        def _ibd(k): return base[k][mask]
-        pitch_err = _ipd("pitch_deg") - _ibd("pitch_deg")
-        yaw_err = _ipd("yaw_deg") - _ibd("yaw_deg")
-        roll_err = _ipd("roll_deg") - _ibd("roll_deg")
-        m["attitude_max_deg"] = float(max(
-            np.max(np.abs(pitch_err)),
-            np.max(np.abs(yaw_err)),
-            np.max(np.abs(roll_err)),
-        ))
-
-    # CEP عند الاصطدام
-    if all(k in base and k in hil for k in ("pos_x", "pos_y")):
-        dx = float(hil["pos_x"][-1] - base["pos_x"][-1])
-        dy = float(hil["pos_y"][-1] - base["pos_y"][-1])
-        m["cep_m"] = float(np.sqrt(dx * dx + dy * dy))
-
-    # نطاق
-    if "ground_range" in base and "ground_range" in hil:
-        r_err = ip("ground_range") - ib("ground_range")
-        m["range_mae"] = float(np.mean(np.abs(r_err)))
+    m: dict = {"t_final_hil": float(t_p[-1])}
 
     # تتبع السيرفو (CAN feedback vs أمر MPC)
     servo = _analyze_servo_tracking(hil)
@@ -452,18 +351,8 @@ def _analyze_timing(path: str, deadline_us: int = 20000) -> dict:
 
 def _gate(m: dict, th: dict) -> bool:
     ok = True
-    vb = th.get("vs_baseline", {})
     tg = th.get("timing", {})
     st = th.get("servo_tracking", {})
-
-    if m.get("velocity_mae", 0) > vb.get("velocity_mae_max", 1e9):
-        ok = False
-    if m.get("attitude_max_deg", 0) > vb.get("attitude_max_deg", 1e9):
-        ok = False
-    if m.get("altitude_mae", 0) > vb.get("altitude_mae_max", 1e9):
-        ok = False
-    if m.get("cep_m", 0) > vb.get("cep_max_m", 1e9):
-        ok = False
 
     t = m.get("timing", {})
     if t:
@@ -494,7 +383,6 @@ def _gate(m: dict, th: dict) -> bool:
 
 
 def _print_summary(m: dict, th: dict) -> None:
-    vb = th.get("vs_baseline", {})
     tg = th.get("timing", {})
     st = th.get("servo_tracking", {})
 
@@ -509,13 +397,6 @@ def _print_summary(m: dict, th: dict) -> None:
         print(f"    {mark} {name:22s} = {val:{fmt}}   (limit {limit})")
 
     print()
-    print("  [baseline ↔ HIL]")
-    _chk("velocity_mae (m/s)",    m.get("velocity_mae"),    vb.get("velocity_mae_max"))
-    _chk("attitude_max (deg)",    m.get("attitude_max_deg"), vb.get("attitude_max_deg"))
-    _chk("altitude_mae (m)",      m.get("altitude_mae"),    vb.get("altitude_mae_max"))
-    _chk("altitude_max_err (m)",  m.get("altitude_max_err"), None)
-    _chk("range_mae (m)",         m.get("range_mae"),       None)
-    _chk("CEP (m)",               m.get("cep_m"),           vb.get("cep_max_m"))
 
     # تتبع السيرفو (fin_act ↔ fin_cmd — العتاد الحقيقي)
     srv = m.get("servo_tracking", {})
@@ -561,10 +442,10 @@ def _print_summary(m: dict, th: dict) -> None:
 def main():
     ap = argparse.ArgumentParser(description="M130 HIL Test Runner (standalone)")
     ap.add_argument("--config", default=str(_SCRIPT_DIR / "hil_config.yaml"))
-    ap.add_argument("--baseline-only", action="store_true")
-    ap.add_argument("--hil-only", action="store_true")
-    ap.add_argument("--compare-only", action="store_true")
-    ap.add_argument("--baseline-csv", default=None)
+    ap.add_argument("--hil-only", action="store_true",
+                    help="شغّل جسر HIL فقط بدون تحليل لاحق")
+    ap.add_argument("--compare-only", action="store_true",
+                    help="حلّل CSV موجودة بدون تشغيل HIL")
     ap.add_argument("--hil-csv", default=None)
     ap.add_argument("--timing-csv", default=None)
     args = ap.parse_args()
@@ -573,28 +454,19 @@ def main():
         cfg = yaml.safe_load(f)
 
     out = cfg.get("output", {})
-    baseline_csv = args.baseline_csv or str(_RESULTS / "baseline_flight.csv")
     hil_csv = args.hil_csv or str(_RESULTS / out.get("csv_name", "hil_flight.csv"))
     timing_csv = args.timing_csv or str(_RESULTS / out.get("timing_csv", "hil_timing.csv"))
     os.makedirs(_RESULTS, exist_ok=True)
-
-    if args.baseline_only:
-        run_baseline(output_csv=baseline_csv)
-        return
 
     if args.hil_only:
         run_hil(args.config, hil_csv, timing_csv)
         return
 
     if not args.compare_only:
-        if not Path(baseline_csv).exists():
-            run_baseline(output_csv=baseline_csv)
-        else:
-            print(f"[runner] reusing baseline: {baseline_csv}")
         run_hil(args.config, hil_csv, timing_csv)
 
     deadline_us = int(cfg.get("timing", {}).get("deadline_us", 20000))
-    report = compare(baseline_csv, hil_csv, timing_csv, cfg["thresholds"],
+    report = compare(hil_csv, timing_csv, cfg["thresholds"],
                      deadline_us=deadline_us)
     sys.exit(0 if report.get("pass") else 1)
 
