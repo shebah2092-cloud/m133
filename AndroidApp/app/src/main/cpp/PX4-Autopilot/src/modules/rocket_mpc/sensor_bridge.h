@@ -5,8 +5,7 @@
 #include <uORB/topics/vehicle_air_data.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <drivers/drv_hrt.h>
-
-#include <cmath>
+#include <lib/geo/geo.h>
 
 static constexpr int SENSOR_NMEAS = 13;
 
@@ -33,14 +32,17 @@ class SensorBridge
 public:
 	SensorBridge() = default;
 
-	/** Set GPS reference origin in WGS84 (call at arm / pre-launch) */
+	/** Set GPS reference origin in WGS84 (call at arm / pre-launch).
+	 *  Delegates the lat/lon → local NED projection to PX4's MapProjection
+	 *  (azimuthal equidistant) so the frame used here matches the one used
+	 *  by EKF2, navigator and commander. This keeps the MHE position state
+	 *  consistent with vehicle_local_position / lpos.ref_lat/ref_lon, which
+	 *  matters when the two streams are mixed (see update_from_lpos and
+	 *  RocketMPC's set_ned_origin). */
 	void set_gps_origin(double lat_deg, double lon_deg, double alt_msl_m)
 	{
-		_ref_lat_deg = lat_deg;
-		_ref_lon_deg = lon_deg;
+		_ref_proj.initReference(lat_deg, lon_deg, hrt_absolute_time());
 		_ref_alt_msl = alt_msl_m;
-		_ref_cos_lat = cos(lat_deg * M_PI / 180.0);
-		_gps_origin_set = true;
 	}
 
 	/** Set the NED origin (arm position in EKF2 lpos frame) used by
@@ -78,7 +80,7 @@ public:
 
 	/** Reference altitude MSL (set at arm). Used as MHE launch_alt parameter. */
 	double ref_alt_msl() const { return _ref_alt_msl; }
-	bool   gps_origin_set() const { return _gps_origin_set; }
+	bool   gps_origin_set() const { return _ref_proj.isInitialized(); }
 	bool   gps_valid() const { return _gps_valid; }
 	// Staleness is handled internally by build_measurement(): once a sample
 	// is older than GPS_STALE_TIMEOUT_US it drops _gps_valid and the caller
@@ -93,16 +95,12 @@ public:
 	hrt_abstime last_gps_update_us() const { return _last_gps_update_us; }
 
 private:
-	// WGS84 flat-earth constants
-	static constexpr double METERS_PER_DEG_LAT    = 111132.92;
-	static constexpr double METERS_PER_DEG_LON_EQ = 111320.0;
-
-	// GPS reference origin
-	double _ref_lat_deg{0.0};
-	double _ref_lon_deg{0.0};
-	double _ref_alt_msl{0.0};
-	double _ref_cos_lat{1.0};
-	bool   _gps_origin_set{false};
+	// GPS reference origin. Lat/lon are held inside _ref_proj (PX4's
+	// azimuthal equidistant MapProjection, same one used by EKF2) so
+	// GPS→NED stays consistent with the rest of the PX4 frame stack.
+	// _ref_alt_msl is kept separately because MapProjection is 2D only.
+	MapProjection _ref_proj{};
+	double        _ref_alt_msl{0.0};
 
 	// NED origin (arm position in EKF2 lpos frame). Used by update_from_lpos
 	// to subtract the arm-time offset so HITL/SITL MHE measurements share a

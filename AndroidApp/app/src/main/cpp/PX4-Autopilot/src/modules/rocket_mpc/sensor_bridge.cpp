@@ -5,9 +5,10 @@ void SensorBridge::update_gps(const sensor_gps_s &gps)
 {
 	if (gps.fix_type < sensor_gps_s::FIX_TYPE_3D) { return; }
 
-	// Reject non-finite values (NaN / Inf) before they poison the flat-earth
-	// conversion, the origin latch, or the MHE measurement vector. A NaN on
-	// the first fix would permanently corrupt _ref_lat_deg via set_gps_origin.
+	// Reject non-finite values (NaN / Inf) before they poison the projection,
+	// the origin latch, or the MHE measurement vector. A NaN on the first fix
+	// would permanently corrupt the MapProjection reference via
+	// set_gps_origin().
 	if (!PX4_ISFINITE(gps.latitude_deg)
 	    || !PX4_ISFINITE(gps.longitude_deg)
 	    || !PX4_ISFINITE(gps.altitude_msl_m)) {
@@ -15,16 +16,19 @@ void SensorBridge::update_gps(const sensor_gps_s &gps)
 	}
 
 	// Auto-set origin on first valid 3D fix if not yet set
-	if (!_gps_origin_set) {
+	if (!_ref_proj.isInitialized()) {
 		set_gps_origin(gps.latitude_deg, gps.longitude_deg, gps.altitude_msl_m);
 	}
 
-	// Flat-earth conversion: GPS WGS84 → local NED relative to arm origin
-	const double dlat = gps.latitude_deg  - _ref_lat_deg;
-	const double dlon = gps.longitude_deg - _ref_lon_deg;
-
-	_gps_north   = dlat * METERS_PER_DEG_LAT;
-	_gps_east    = dlon * METERS_PER_DEG_LON_EQ * _ref_cos_lat;
+	// WGS84 → local NED relative to arm origin via PX4's azimuthal
+	// equidistant MapProjection — same projection used by EKF2 / navigator /
+	// commander, so GPS-fed MHE measurements share a frame with lpos-fed
+	// ones in update_from_lpos().
+	float north_m = 0.0f;
+	float east_m  = 0.0f;
+	_ref_proj.project(gps.latitude_deg, gps.longitude_deg, north_m, east_m);
+	_gps_north   = (double)north_m;
+	_gps_east    = (double)east_m;
 	_gps_alt_msl = gps.altitude_msl_m;
 
 	if (gps.vel_ned_valid
@@ -48,7 +52,7 @@ void SensorBridge::update_from_lpos(const vehicle_local_position_s &lpos)
 	// Guard 1: reject until GPS origin is set — otherwise _ref_alt_msl=0
 	// and _gps_alt_msl would be a relative value mistaken for MSL,
 	// causing MHE to diverge trying to fit physics at wrong altitude.
-	if (!_gps_origin_set) { return; }
+	if (!_ref_proj.isInitialized()) { return; }
 
 	// Guard 2: reject if EKF2 has not yet produced valid position estimates.
 	if (!lpos.xy_valid || !lpos.z_valid) { return; }

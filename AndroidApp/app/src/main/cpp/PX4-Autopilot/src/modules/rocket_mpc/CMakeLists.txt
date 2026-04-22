@@ -134,6 +134,7 @@ px4_add_module(
 		${ACADOS_ROOT}/include/blasfeo/include
 		${ACADOS_ROOT}/include/hpipm/include
 	DEPENDS
+		geo
 		mathlib
 		px4_work_queue
 	)
