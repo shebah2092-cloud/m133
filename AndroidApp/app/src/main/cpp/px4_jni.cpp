@@ -451,12 +451,22 @@ static void start_px4_modules(const std::string& storage_path) {
                 if (p != PARAM_INVALID) { float v = 30.0f; param_set(p, &v); }
                 p = param_find("SYS_HAS_MAG");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
-                p = param_find("COM_ARM_EKF_POS");
-                if (p != PARAM_INVALID) { float v = 0.0f; param_set(p, &v); }
-                p = param_find("COM_ARM_EKF_VEL");
-                if (p != PARAM_INVALID) { float v = 0.0f; param_set(p, &v); }
-                p = param_find("COM_ARM_EKF_HGT");
-                if (p != PARAM_INVALID) { float v = 0.0f; param_set(p, &v); }
+                // Real-flight arming gate: require a GPS fix and a converged
+                // EKF2 state estimate.  Mirrors the settings in ROMFS airframe
+                // 22005_m130_rocket_mpc_real so that JNI-driven parameter
+                // overrides do not quietly re-open the permissive path.
+                //
+                // COM_ARM_WO_GPS = 0  : deny arming on any GPS check fail.
+                // EKF2_GPS_CHECK = 1037 : bits 0|2|3|10 = sats + EPH + EPV + fix.
+                //
+                // The previously-set COM_ARM_EKF_{POS,VEL,HGT} names are not
+                // defined in current PX4 (legacy from an older fork) so the
+                // writes were no-ops; removed here to avoid the false sense
+                // of safety they gave.
+                p = param_find("COM_ARM_WO_GPS");
+                if (p != PARAM_INVALID) { int32_t v = 0; param_set(p, &v); }
+                p = param_find("EKF2_GPS_CHECK");
+                if (p != PARAM_INVALID) { int32_t v = 1037; param_set(p, &v); }
                 // MHE must read the real sensor_gps, not EKF2 lpos.  Force this even if
                 // a previous SITL session had saved ROCKET_SITL_GPS=1.
                 p = param_find("ROCKET_SITL_GPS");
