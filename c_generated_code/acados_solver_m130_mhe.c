@@ -396,10 +396,10 @@ void m130_mhe_acados_create_set_default_parameters(m130_mhe_solver_capsule* caps
     // initialize parameters to nominal value
     double* p = calloc(NP, sizeof(double));
     p[3] = 12.74;
-    p[4] = 600;
-    p[5] = 0.0373;
-    p[6] = 1.122;
-    p[7] = 1.122;
+    p[4] = 893.5;
+    p[5] = 0.0389;
+    p[6] = 1.1651;
+    p[7] = 1.166;
     p[8] = 1200;
 
     for (int i = 0; i <= N; i++) {

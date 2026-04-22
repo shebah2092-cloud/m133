@@ -184,10 +184,10 @@ int m130_mhe_acados_sim_create(m130_mhe_sim_solver_capsule * capsule)
     double* p = calloc(np, sizeof(double));
     
     p[3] = 12.74;
-    p[4] = 600;
-    p[5] = 0.0373;
-    p[6] = 1.122;
-    p[7] = 1.122;
+    p[4] = 893.5;
+    p[5] = 0.0389;
+    p[6] = 1.1651;
+    p[7] = 1.166;
     p[8] = 1200;
 
     m130_mhe_acados_sim_update_params(capsule, p, np);
