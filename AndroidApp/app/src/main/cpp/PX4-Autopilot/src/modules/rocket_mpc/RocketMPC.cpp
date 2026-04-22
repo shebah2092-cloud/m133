@@ -878,27 +878,19 @@ void RocketMPC::Run()
 			x0_mhe[IX_R]     = sc.gyro_rad[2];
 			x0_mhe[IX_PHI]   = euler0.phi();
 			// IX_XG / IX_YG must live in the same frame as the GPS measurements
-			// fed to MHE by SensorBridge:
-			//   SITL/HITL (update_from_lpos): _gps_north = lpos.x
-			//       → MHE state is absolute NED from the EKF2 local origin
-			//       → seed with _arm_origin_{x,y} (= lpos.{x,y} at arm)
-			//   Real flight (update_gps): _gps_north = (lat-ref_lat)·M_LAT
-			//       and ref is re-latched to the current GPS fix at arm time,
-			//       so measurements start at 0 at arm
-			//       → seed with 0.0
-			// Previous unconditional use of _arm_origin_{x,y} left a bias
-			// on real-GPS flights whenever the EKF2 local origin did not
-			// coincide with the arming position.
-			x0_mhe[IX_H] = 0.0;
-
-			if (_hitl || _param_sitl_gps.get() == 1) {
-				x0_mhe[IX_XG] = (double)(_arm_origin_x / X_SCALE);
-				x0_mhe[IX_YG] = (double)(_arm_origin_y / Y_SCALE);
-
-			} else {
-				x0_mhe[IX_XG] = 0.0;
-				x0_mhe[IX_YG] = 0.0;
-			}
+			// fed to MHE by SensorBridge. Both paths are now arm-relative:
+			//   SITL/HITL (update_from_lpos): _gps_north = lpos.x - _ned_origin_x
+			//       with _ned_origin set to _arm_origin at arm
+			//       → measurements start at 0 at arm
+			//   Real flight (update_gps): _gps_north = (lat-ref_lat)·M_LAT with
+			//       ref re-latched to the current GPS fix at arm
+			//       → measurements start at 0 at arm
+			// So seed IX_XG = IX_YG = 0 in every mode. Any non-zero seed here
+			// would create an immediate residual against the near-zero GPS
+			// measurement and bias the first MHE solves.
+			x0_mhe[IX_H]  = 0.0;
+			x0_mhe[IX_XG] = 0.0;
+			x0_mhe[IX_YG] = 0.0;
 
 			// Biases + wind: zero
 			_mhe.init_state(x0_mhe);
