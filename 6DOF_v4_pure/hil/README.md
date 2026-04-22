@@ -1,18 +1,16 @@
 # HIL — Hardware-In-the-Loop (M130)
 
-> **حالة التنفيذ:** هذا الإصدار يدعم الآن وضعين عبر `hil.mode`:
+> **حالة التنفيذ:** HIL يعمل الآن في وضع واحد فقط: **`closed_loop`**.
 >
-> - **`monitor_only` (default)** — ديناميكا المحاكاة تستخدم أمر MPC الخام
->   ممرّراً عبر نموذج سيرفو Python من الدرجة الأولى (τ=15ms). فيدباك
->   CAN للتسجيل وفحص السلامة فقط. هذا السلوك التاريخي ويُطابق الطيران
->   الحقيقي حيث EKF يستنتج الحالة من IMU فقط ولا يرى زاوية السيرفو.
-> - **`closed_loop`** — الزاوية المقاسة من السيرفوهات الحقيقية (SRV_FB)
->   تُحقن مباشرة في الأيروديناميكا، ويُعطَّل نموذج Python لتفادي مضاعفة
->   التأخير. هذا يكشف سلوك العتاد الفعلي (backlash، slew، CAN latency،
->   jitter) على المسار.
+> الزاوية المقاسة من السيرفوهات الحقيقية (SRV_FB) تُحقن مباشرة في
+> الأيروديناميكا. نموذج Python السيرفو (τ=15ms) مُعطَّل لتفادي مضاعفة
+> التأخير (العتاد الحقيقي فيه τ فيزيائي بالفعل). هذا يكشف سلوك العتاد
+> الفعلي: backlash، slew، CAN latency، jitter — على مسار الصاروخ
+> المحاكى.
 >
-> لتفعيل closed_loop أضف `mode: closed_loop` في `hil_config.yaml`. لا
-> تغيير في أي سلوك قائم إذا لم تُضف `mode` صراحةً.
+> الوضع التاريخي `monitor_only` أُزيل كلياً في هذا الإصدار. إذا كانت
+> لديك إعدادات قديمة فيها `mode: monitor_only` أو `use_servo_feedback`،
+> أزلها أو اضبط `mode: closed_loop`.
 
 مجلد اختبار HIL مستقل عن PIL: يُشغّل محاكاة 6DOF على اللابتوب، ويُرسل
 حسّاسات اصطناعية للهاتف عبر TCP 4560، بينما MPC يعمل على هاتف Android
@@ -22,26 +20,18 @@
 ## ما يقيسه هذا الاختبار فعلياً
 
 1. **صحّة MPC الـ C++ على PX4** في دورة طيران كاملة مقابل baseline Python.
-2. **هل العتاد يتّبع الأوامر؟** — فيدباك CAN يُقارن مع الأمر كفحص سلامة
-   (tracking error، online_mask، tx_fail، latency).
-3. **سلامة stack الاتصالات** — MAVLink, TCP, debug_array, CAN transport.
+2. **أداء العتاد الحقيقي على المسار** — الزاوية المقاسة من السيرفوهات
+   تقود الأيروديناميكا، فـ backlash/slew/CAN latency يظهران في المسار
+   النهائي.
+3. **تتبّع السيرفو** — fin_act (الزاوية المقاسة) مقابل fin_cmd (أمر MPC)
+   كفحص أداء hardware.
+4. **سلامة stack الاتصالات** — MAVLink, TCP, debug_array, CAN transport.
 
-## ما لا يقيسه هذا الاختبار (في الوضع الحالي)
-
-- **أثر ديناميكا السيرفو الفعلية على المسار** — المسار محسوب من نموذج
-  Python، لا من العتاد. لذا backlash، slew، CAN latency، torque ceiling
-  غير ظاهرة في الأيروديناميكا.
-- عتبة `servo_tracking` في `hil_config.yaml` تُقارن مخرج **نموذج Python**
-  بالأمر (ليس العتاد). لا تفشل عملياً ولا تكشف أخطاء hardware.
-
-لقياس أداء العتاد فعلياً، راجع أعمدة `fin_can_*` في
-`results/hil_flight_servo.csv` (هذه الزاوية الحقيقية المقاسة).
-
-## تدفق البيانات الفعلي (كما هو في الكود)
+## تدفق البيانات
 
 ```
 PX4 MPC (Android)
-  ↓ uORB: actuator_outputs_sim  (أو actuator_servos)
+  ↓ uORB: actuator_outputs_sim
 XqpowerCan driver  [100Hz]
   ↓ CAN TX (XQPOWER protocol, 500 kbps)
 USB_CAN_A (CH340, VID=0x1A86)
@@ -49,24 +39,22 @@ USB_CAN_A (CH340, VID=0x1A86)
 4 سيرفوهات حقيقية
   ↓ PDO auto-report (كل 50ms، ≈20Hz/servo)
 USB-Serial RX ← CAN RX
-  ↓ XqpowerCan يجمّع ويَنشر
+  ↓ XqpowerCan يجمّع وينشر
 debug_array (name="SRV_FB", id=1)  [≤100Hz]
   ↓ MAVLink DEBUG_FLOAT_ARRAY (TCP 5760)
 Python mavlink_bridge_hil.py
   ↓
-        ┌─────────────────────────────────┐
-        │                                 │
-   [مسار الرصد فقط]                   [مسار الديناميكا]
-   _servo_fb_rad ↓                    _last_controls[:4] (أمر MPC)
-   • تسجيل CSV (fin_can_*)              ↓
-   • فحص خطأ تتبع (10° حد السلامة)     ActuatorModel Python (τ=15ms)
-   • online_mask، tx_fail               ↓
-   • معايرة صفر                        aero forces + 6DOF RK4
-   • لا يُحقن في الديناميكا             ↓
-                                   HIL_STATE_QUATERNION, HIL_SENSOR
-                                        ↓ TCP 4560
-                                      PX4 EKF2 → MPC التالي
+  _servo_fb_rad (الزاوية الحقيقية المقاسة)
+  ↓
+  aero forces + 6DOF RK4   ← ديناميكا المحاكاة تعتمد عليها مباشرة
+  ↓
+  HIL_STATE_QUATERNION, HIL_SENSOR
+  ↓ TCP 4560
+  PX4 EKF2 → MPC التالي
 ```
+
+نموذج Python السيرفو **مُعطَّل** (`use_actuator_dynamics=False`) لأن
+العتاد الحقيقي هو المصدر الوحيد للتأخير المطبَّق على الأيروديناميكا.
 
 ## المتطلبات
 
@@ -103,16 +91,16 @@ python hil_runner.py --baseline-only
 
 ## المخرجات
 
-- `results/hil_flight.csv` — مسار الرحلة (الحالة الديناميكية، fin angle
-  الذي دخل الأيروديناميكا هو مخرج نموذج Python لا العتاد).
-- `results/hil_flight_servo.csv` — سجلّ مراقبة العتاد: `cmd/fb/err` لكل
-  سيرفو، online_mask، tx_fail. **لقياس أداء العتاد الحقيقي استخدم هذا
-  الملف.**
+- `results/hil_flight.csv` — مسار الرحلة. عمود `fin_act_*` هو الزاوية
+  الحقيقية المقاسة (مطابق `fin_can_*`)، `fin_cmd_*` هو أمر MPC،
+  `fin_source` يوضّح من أين أتت الزاوية في كل خطوة (`can`/`hold`/`cmd`/`abort`).
+- `results/hil_flight_servo.csv` — سجلّ تفصيلي لكل SRV_FB:
+  `cmd/fb/err` لكل سيرفو، `online_mask`، `tx_fail`.
 - `results/hil_timing.csv` — توقيت MHE/MPC/Cycle على PX4.
-- `results/baseline_flight.csv` — المرجع (Python MPC على اللابتوب، بدون
-  عتاد).
+- `results/baseline_flight.csv` — المرجع (Python MPC كامل على اللابتوب،
+  بدون عتاد — للمقارنة مع HIL).
 
-## التحقق من عمل مسار الرصد
+## التحقق من عمل فيدباك السيرفو
 
 بعد تشغيل HIL، يجب أن ترى:
 
@@ -120,40 +108,21 @@ python hil_runner.py --baseline-only
 [HIL] Servo feedback: N frames, fallback_to_cmd=K steps, online_mask=0x0F, tx_fail=0
 ```
 
-- `N > 0` — فيدباك CAN يصل (مسار الرصد يعمل).
-- `fallback_to_cmd=0` في الوضع الحالي دائماً — العدّاد محجوز لـ Phase 2
-  (closed-loop) حيث سيعدّ الخطوات التي عادت إلى cmd fallback عند stale
-  feedback. في monitor-only لا يوجد fallback لأن الديناميكا لا تستخدم
-  الفيدباك أصلاً.
+- `N > 0` — فيدباك CAN يصل (إلزامي؛ HIL لا معنى له بدونه).
+- `fallback_to_cmd=K` — عدد الخطوات التي استخدمت أمر MPC بدل الفيدباك
+  (في grace period أو عند stale). القيم الكبيرة = مشكلة في CAN.
 - `online_mask=0x0F` — جميع السيرفوهات الأربعة متصلة.
 - `tx_fail=0` — لا فشل إرسال CAN.
 
-إذا `N=0`:
+إذا `N=0`، المحاكاة ستتوقّف بعد `servo_feedback_grace_ms + servo_feedback_abort_ms`
+مع رسالة ABORT. تحقّق:
 1. `adb forward tcp:5760` مُفعّل؟
 2. `xqpower_can` يعمل؟ `adb logcat | grep -i xqpower`
 3. CAN متصل فعلياً؟ `online_mask != 0`
+4. السيرفوهات مُشغّلة بمصدر طاقة؟
 
-> ملاحظة: حتى لو `N=0`، الطيران يكتمل لأن الديناميكا لا تعتمد على الفيدباك
-> في الوضع الحالي. ستَرى فقط أن أعمدة `fin_can_*` في CSV فارغة/صفرية.
+## سلوك السقوط عند فقدان الفيدباك
 
-## الإعدادات المهمة في `hil_config.yaml`
-
-```yaml
-hil:
-  mode: monitor_only                    # monitor_only | closed_loop
-  use_servo_feedback: true              # تمكين مسار الرصد (تسجيل + سلامة)
-  servo_feedback_timeout_ms: 200.0      # يُعدّ قياس CAN قديماً بعد 200ms
-  servo_feedback_abort_ms: 500.0        # closed_loop: توقّف المحاكاة
-  servo_feedback_grace_ms: 500.0        # closed_loop: فترة سماح بدء الطيران
-  require_all_servos_online: false      # true: يوقف إذا أي سيرفو offline
-  servo_auto_zero: true                 # معايرة صفر تلقائية قبل الطيران
-```
-
-**`monitor_only` (default)**: تبديل `use_servo_feedback: false` يُعطّل
-قراءة SRV_FB وتسجيلها — لا يغيّر ديناميكا المحاكاة.
-
-**`closed_loop`**: السيرفوهات الحقيقية تقود الأيروديناميكا. سلوك السقوط
-عند فقدان الفيدباك:
 1. خلال `servo_feedback_grace_ms` الأولى من الطيران: إذا لم يُستلم أي
    فيدباك بعد، نستخدم أمر MPC مؤقتاً (`fin_source=cmd`) — يسمح بالإقلاع
    إذا تأخّر أول PDO.
@@ -163,7 +132,17 @@ hil:
 3. إذا تجاوز الشيخوخة `servo_feedback_abort_ms` → إيقاف محاكاة فوري
    (bench abort، ليس DO_FLIGHTTERMINATION).
 
-عمود `fin_source` في `hil_flight.csv` يوضّح القرار في كل خطوة.
+## الإعدادات المهمة في `hil_config.yaml`
+
+```yaml
+hil:
+  mode: closed_loop                     # الوضع الوحيد المدعوم
+  servo_feedback_timeout_ms: 200.0      # يُعدّ قياس CAN قديماً بعد 200ms
+  servo_feedback_abort_ms: 500.0        # > هذا → abort محاكاة
+  servo_feedback_grace_ms: 500.0        # فترة سماح بدء الطيران
+  require_all_servos_online: false      # true: يوقف إذا أي سيرفو offline
+  servo_auto_zero: true                 # معايرة صفر تلقائية قبل الطيران
+```
 
 ## السلامة
 
@@ -173,25 +152,21 @@ hil:
 3. تحقق من حدود الزوايا عبر `XQCAN_LIMIT`.
 4. أبقِ مصدر الطاقة قابلاً للفصل السريع (E-stop).
 
-## المسار المستقبلي (Phase 3+)
-
-Phase 2 (هذا الإصدار) يدعم `closed_loop` بحقن الزاوية المقاسة في
-الديناميكا. التحسينات المتبقية:
+## المسار المستقبلي
 
 1. **Phase 3** — رفع معدل PDO auto-report من 50ms (20Hz) إلى 10ms
-   (100Hz) في `XqpowerCan.cpp` لتقليل transport delay في closed_loop.
+   (100Hz) في `XqpowerCan.cpp` لتقليل transport delay.
 2. **Phase 4** — preflight fin exerciser: بعد الـ auto-zero وقبل الإقلاع،
    تشغيل السيرفوهات عبر مدى ±15° للتحقق من صحة الاستجابة قبل الحلقة
    المغلقة.
-3. **Phase 5** — validation report يقارن real-flight vs closed-loop HIL
-   vs monitor_only على نفس السيناريو.
-
-خطة التنفيذ الكاملة موثّقة في تقرير إعادة تصميم HIL.
+3. **Phase 5** — validation report يقارن real-flight vs HIL على نفس
+   السيناريو.
 
 ## الملفات
 
 - `mavlink_bridge_hil.py` — جسر MAVLink (يستقبل sensors من sim، يُرسل
-  HIL_STATE_QUATERNION، يقرأ HIL_ACTUATOR_CONTROLS، يقرأ SRV_FB للرصد).
+  HIL_STATE_QUATERNION، يقرأ HIL_ACTUATOR_CONTROLS، يقرأ SRV_FB ويحقنه
+  في الديناميكا).
 - `hil_runner.py` — المشغّل الرئيسي (baseline + HIL + compare).
 - `hil_config.yaml` — الإعدادات.
 - `results/` — المخرجات.
