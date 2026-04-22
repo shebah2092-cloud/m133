@@ -1,13 +1,18 @@
 # HIL — Hardware-In-the-Loop (M130)
 
-> **ملاحظة مهمة عن حالة التنفيذ الحالية:** هذا الإصدار يعمل فعلياً في وضع
-> **مراقبة العتاد (monitor-only)**: ديناميكا المحاكاة لا تستخدم الزاوية
-> المقاسة من السيرفوهات الحقيقية، بل تستخدم أمر MPC الخام ممرّراً عبر
-> نموذج سيرفو Python من الدرجة الأولى (τ=15ms). فيدباك CAN يُستخدم
-> **للتسجيل والرصد وفحص السلامة فقط**، وليس لحساب الأيروديناميكا.
+> **حالة التنفيذ:** هذا الإصدار يدعم الآن وضعين عبر `hil.mode`:
 >
-> الحقن الحقيقي للزاوية المقاسة في الديناميكا (HIL مغلق الحلقة) مُخطَّط
-> لمرحلة لاحقة — انظر قسم "المسار المستقبلي" في نهاية هذا الملف.
+> - **`monitor_only` (default)** — ديناميكا المحاكاة تستخدم أمر MPC الخام
+>   ممرّراً عبر نموذج سيرفو Python من الدرجة الأولى (τ=15ms). فيدباك
+>   CAN للتسجيل وفحص السلامة فقط. هذا السلوك التاريخي ويُطابق الطيران
+>   الحقيقي حيث EKF يستنتج الحالة من IMU فقط ولا يرى زاوية السيرفو.
+> - **`closed_loop`** — الزاوية المقاسة من السيرفوهات الحقيقية (SRV_FB)
+>   تُحقن مباشرة في الأيروديناميكا، ويُعطَّل نموذج Python لتفادي مضاعفة
+>   التأخير. هذا يكشف سلوك العتاد الفعلي (backlash، slew، CAN latency،
+>   jitter) على المسار.
+>
+> لتفعيل closed_loop أضف `mode: closed_loop` في `hil_config.yaml`. لا
+> تغيير في أي سلوك قائم إذا لم تُضف `mode` صراحةً.
 
 مجلد اختبار HIL مستقل عن PIL: يُشغّل محاكاة 6DOF على اللابتوب، ويُرسل
 حسّاسات اصطناعية للهاتف عبر TCP 4560، بينما MPC يعمل على هاتف Android
@@ -135,14 +140,30 @@ python hil_runner.py --baseline-only
 
 ```yaml
 hil:
+  mode: monitor_only                    # monitor_only | closed_loop
   use_servo_feedback: true              # تمكين مسار الرصد (تسجيل + سلامة)
   servo_feedback_timeout_ms: 200.0      # يُعدّ قياس CAN قديماً بعد 200ms
+  servo_feedback_abort_ms: 500.0        # closed_loop: توقّف المحاكاة
+  servo_feedback_grace_ms: 500.0        # closed_loop: فترة سماح بدء الطيران
   require_all_servos_online: false      # true: يوقف إذا أي سيرفو offline
   servo_auto_zero: true                 # معايرة صفر تلقائية قبل الطيران
 ```
 
-تبديل `use_servo_feedback: false` يُعطّل قراءة SRV_FB وتسجيلها — **لا
-يغيّر ديناميكا المحاكاة**.
+**`monitor_only` (default)**: تبديل `use_servo_feedback: false` يُعطّل
+قراءة SRV_FB وتسجيلها — لا يغيّر ديناميكا المحاكاة.
+
+**`closed_loop`**: السيرفوهات الحقيقية تقود الأيروديناميكا. سلوك السقوط
+عند فقدان الفيدباك:
+1. خلال `servo_feedback_grace_ms` الأولى من الطيران: إذا لم يُستلم أي
+   فيدباك بعد، نستخدم أمر MPC مؤقتاً (`fin_source=cmd`) — يسمح بالإقلاع
+   إذا تأخّر أول PDO.
+2. بعد الـ grace: إذا شاخ الفيدباك > `servo_feedback_timeout_ms` لكن
+   < `servo_feedback_abort_ms`، نحتفظ بآخر زاوية CAN معروفة
+   (`fin_source=hold`).
+3. إذا تجاوز الشيخوخة `servo_feedback_abort_ms` → إيقاف محاكاة فوري
+   (bench abort، ليس DO_FLIGHTTERMINATION).
+
+عمود `fin_source` في `hil_flight.csv` يوضّح القرار في كل خطوة.
 
 ## السلامة
 
@@ -152,21 +173,20 @@ hil:
 3. تحقق من حدود الزوايا عبر `XQCAN_LIMIT`.
 4. أبقِ مصدر الطاقة قابلاً للفصل السريع (E-stop).
 
-## المسار المستقبلي (closed-loop HIL)
+## المسار المستقبلي (Phase 3+)
 
-الغرض الأصلي من HIL هو أن تؤثّر ديناميكا السيرفو الحقيقية على المسار.
-يتطلّب ذلك:
+Phase 2 (هذا الإصدار) يدعم `closed_loop` بحقن الزاوية المقاسة في
+الديناميكا. التحسينات المتبقية:
 
-1. حقن `_servo_fb_rad` (الزاوية المقاسة) في `_ctrl()` بدل `_last_controls[:4]`
-   (الأمر).
-2. تعطيل `use_actuator_dynamics` في الوضع closed-loop (لإلغاء نموذج
-   Python τ=15ms الوسيط).
-3. رفع معدل PDO auto-report من 50ms (20Hz) إلى 10ms (100Hz) في
-   `XqpowerCan.cpp`.
-4. تعديل عتبة `servo_tracking` لتُقارن `fin_can` بدل `fin_act`.
-5. معالجة timeout + emergency abort عند فقدان فيدباك > 500ms.
+1. **Phase 3** — رفع معدل PDO auto-report من 50ms (20Hz) إلى 10ms
+   (100Hz) في `XqpowerCan.cpp` لتقليل transport delay في closed_loop.
+2. **Phase 4** — preflight fin exerciser: بعد الـ auto-zero وقبل الإقلاع،
+   تشغيل السيرفوهات عبر مدى ±15° للتحقق من صحة الاستجابة قبل الحلقة
+   المغلقة.
+3. **Phase 5** — validation report يقارن real-flight vs closed-loop HIL
+   vs monitor_only على نفس السيناريو.
 
-خطة التنفيذ الكاملة موثّقة في تقرير مراجعة HIL المنفصل.
+خطة التنفيذ الكاملة موثّقة في تقرير إعادة تصميم HIL.
 
 ## الملفات
 
