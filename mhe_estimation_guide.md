@@ -1,3 +1,18 @@
+> ⚠️ **وثيقة تاريخية (DEPRECATED)**
+>
+> هذا الدليل كُتب أثناء فترة تصميم النظام عندما كان المودول يُسمّى `RocketGNC` ويستخدم Proportional Navigation.
+> النظام الحالي المُنفَّذ فعلياً هو مودول `rocket_mpc` في
+> `AndroidApp/app/src/main/cpp/PX4-Autopilot/src/modules/rocket_mpc/`
+> الذي يدمج MPC + MHE + LOS guidance في حلقة واحدة.
+>
+> - الملف الرئيسي: `RocketMPC.cpp` (ليس `RocketGNC.cpp`)
+> - البارامترات الحالية: `rocket_mpc_params.c`
+> - الحلقة: `Run()` تُستدعى على كل `sensor_combined` (IMU rate)
+>
+> احفظ هذا الدليل للمرجع التاريخي فقط. لا تعتمد على أي من أسماء الملفات/البارامترات/الدوال المذكورة أدناه كمرجع للكود الحالي.
+
+---
+
 # دليل شامل: استبدال EKF2 بـ MHE باستخدام acados
 
 ## الجزء الثاني - بافتراض أن MPC يعمل بنجاح في RocketGNC

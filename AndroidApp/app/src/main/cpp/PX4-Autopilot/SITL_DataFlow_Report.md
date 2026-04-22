@@ -1,3 +1,9 @@
+> ⚠️ **جزء من هذه الوثيقة متقادم**
+>
+> قسم البارامترات (§9) في هذه الوثيقة يصف نظام `RocketGNC` القديم المبنيّ على PN. النظام الحالي هو **مودول `rocket_mpc` واحد** (MPC + MHE + LOS). البارامترات أدناه غير موجودة: `ROCKET_T_STG1`, `ROCKET_SET_ALT`, `ROCKET_NPN`, `ROCKET_TAU_PN1`, `ROCKET_K_YAW`, `ROCKET_K_VZ`, `ROCKET_AYC_LIM`, `ROCKET_APC_LIM`, `ROCKET_MAX_DEFL`. راجع `rocket_mpc_params.c` للمرجع الصحيح.
+
+---
+
 # تقرير تدفق البيانات: محاكاة SITL للصاروخ M130
 
 ## نظام محاكاة 6DOF_v2_130 مع PX4 — التوثيق الكامل

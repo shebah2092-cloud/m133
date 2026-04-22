@@ -1,3 +1,15 @@
+> ⚠️ **جزء من هذه الوثيقة متقادم — قيد التحديث**
+>
+> الوثيقة كُتبت عندما كان التوجيه مبنيّاً على Proportional Navigation (PN) مع مراحل متعدّدة (`ROCKET_T_STG1`, `ROCKET_SET_ALT`, `ROCKET_NPN`, `ROCKET_TAU_PN1`, `ROCKET_K_YAW`, `ROCKET_K_VZ`, ...). النظام الحالي يستخدم **مودول `rocket_mpc` واحد** (MPC + MHE + LOS guidance) بدون مراحل، والبارامترات القديمة لم تعد موجودة.
+>
+> - **الموجود فعلياً**: `ROCKET_T_CTRL`, `ROCKET_XTRGT`, `ROCKET_HTRGT`, `ROCKET_IMP_ANG`, `ROCKET_CRUISE_P`, بارامترات الكتلة/العزم، `ROCKET_MHE_QG`, `ROCKET_MPC_TF`, `ROCKET_SITL_GPS`. راجع `rocket_mpc_params.c` للقائمة الكاملة.
+> - **غير موجود**: كل ما يبدأ بـ `T_STG1`, `SET_ALT`, `NPN`, `TAU_PN1`, `K_YAW`, `K_VZ`, `AYC_LIM`, `APC_LIM`, `MAX_DEFL`, `MAX_RATE`, `GND_TEST`, `YTRGT`, `ZTRGT`.
+> - **الكشف**: تسارع فقط (`ax>g` + `ΔV>2 m/s`). لا شروط yaw_los / T_STG1.
+> - **التحكم**: يبدأ عند `t > ROCKET_T_CTRL` (افتراضي 0.3s) **و** `vm > 10 m/s`.
+> - **الرسائل**: `rocket_mpc:` وليس `rocket_gnc:`.
+
+---
+
 # وثيقة عمليات الإطلاق — صاروخ M130 (منصة Android)
 
 > **النظام:** PX4 على Android + RocketGNC + XQPOWER CAN Servos + u-blox GPS UBX

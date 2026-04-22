@@ -1,3 +1,19 @@
+> ⚠️ **وثيقة تاريخية (DEPRECATED)**
+>
+> هذا الدليل يصف التصميم الأصلي قبل تنفيذ المودول الحالي. النظام الفعلي المُنفَّذ هو
+> `rocket_mpc` في
+> `AndroidApp/app/src/main/cpp/PX4-Autopilot/src/modules/rocket_mpc/`
+> وليس مودول `RocketGNC` المذكور هنا.
+>
+> التكامل الفعلي مع acados يحدث الآن في:
+> - `mpc_controller.{h,cpp}` — يستدعي الكود المولَّد من acados لحل MPC
+> - `mhe_estimator.{h,cpp}` — يستدعي الكود المولَّد من acados لحل MHE
+> - `los_guidance.{h,cpp}` — مُرشِّد Line-of-Sight يُنتج المرجع لـ MPC
+>
+> احفظ هذا الدليل للمرجع التاريخي فقط.
+
+---
+
 # دليل شامل: نظام acados وتكامله مع صاروخ M130
 
 ## وثيقة تقنية مبسّطة تشرح ماهية acados وبنيته وفوائده وطريقة ربطه بـ PX4
