@@ -267,18 +267,23 @@ def _analyze_servo_tracking(hil_data: dict) -> dict:
     cmd_rad = np.column_stack([hil_data["fin_cmd_1"], hil_data["fin_cmd_2"],
                                hil_data["fin_cmd_3"], hil_data["fin_cmd_4"]])
 
-    # نحسب MAE/P95 فقط على الخطوات التي fin_source == "can" (فيدباك حيّ)
-    # — خطوات hold/cmd/abort تحتوي على fin_act مُطابق للأمر (err=0) أو
-    # قديم، ما يُلوّث إحصاء أداء العتاد الحقيقي.
+    # نحسب MAE/P95 فقط على الخطوات التي fin_source == "can" (فيدباك حيّ).
+    # الخطوات الأخرى لها دلالات مختلفة لا يجب خلطها مع أداء العتاد:
+    #   "cmd"   — grace period قبل أول فيدباك؛ fin_act = cmd (خطأ=0 مصطنع)
+    #   "hold"  — آخر فيدباك CAN (stale)؛ fin_act قديم، يُلوّث الإحصاء
+    #   "abort" — فيدباك مفقود بعد grace؛ fin_act قديم
     # load_csv يضع القيم النصية في "_str_fin_source" وأصفاراً في "fin_source"
     # (لأن float("can") يرفع) — نُفضّل النسخة النصية.
     fin_source = hil_data.get("_str_fin_source") or hil_data.get("fin_source")
     if fin_source is not None and len(fin_source) == n:
-        can_mask = np.asarray(
-            [str(s).strip() == "can" for s in fin_source], dtype=bool
-        )
+        src = np.asarray([str(s).strip() for s in fin_source])
+        can_mask = src == "can"
+        hold_steps = int((src == "hold").sum())
+        cmd_steps = int((src == "cmd").sum())
+        abort_steps = int((src == "abort").sum())
     else:
         can_mask = np.ones(n, dtype=bool)
+        hold_steps = cmd_steps = abort_steps = 0
 
     # خطأ التتبع: fin_act يجب أن يتبع fin_cmd مع تأخير العتاد الفيزيائي
     err_deg = np.abs(np.degrees(act_rad - cmd_rad))
@@ -306,6 +311,10 @@ def _analyze_servo_tracking(hil_data: dict) -> dict:
         "available": True,
         "total_steps": n,
         "can_steps": can_steps,
+        "hold_steps": hold_steps,
+        "cmd_steps": cmd_steps,
+        "abort_steps": abort_steps,
+        "can_ratio": float(can_steps / n) if n > 0 else 0.0,
         "tracking_mae_deg": float(np.mean(tracked_err)),
         "tracking_p95_deg": float(np.percentile(tracked_err, 95)),
         "tracking_p99_deg": float(np.percentile(tracked_err, 99)),
@@ -401,7 +410,17 @@ def _print_summary(m: dict, th: dict) -> None:
     # تتبع السيرفو (fin_act ↔ fin_cmd — العتاد الحقيقي)
     srv = m.get("servo_tracking", {})
     if srv.get("available", False):
-        print(f"\n  [servo tracking] fin_act vs fin_cmd   steps={srv.get('total_steps',0)}")
+        total = srv.get("total_steps", 0)
+        print(f"\n  [servo tracking] fin_act vs fin_cmd   steps={total}")
+        # توزيع fin_source (عرض تشخيصي — لا يُستخدم في البوابة حالياً).
+        # نسبة can < 90% مؤشّر على أن معظم الرحلة لم يُستخدم فيها
+        # فيدباك حيّ، فتفسير MAE/P95 يصبح محدوداً.
+        can_s = srv.get("can_steps", 0)
+        ratio = srv.get("can_ratio", 0.0)
+        print(f"    fin_source: can={can_s} ({ratio*100:.1f}%)  "
+              f"hold={srv.get('hold_steps', 0)}  "
+              f"cmd={srv.get('cmd_steps', 0)}  "
+              f"abort={srv.get('abort_steps', 0)}")
         if srv.get("can_frames") is not None:
             print(f"    CAN frames={srv['can_frames']}  "
                   f"CAN-cmd MAE={srv.get('can_cmd_mae_deg',0):.2f}°  "
