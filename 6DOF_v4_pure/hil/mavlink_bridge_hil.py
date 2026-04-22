@@ -172,6 +172,32 @@ def parse_param_value(payload: bytes) -> Optional[dict]:
         return None
 
 
+# حدود حقول MAVLink المُقاسة (scaled ints). تجاوزها يسبّب `struct.error`
+# يقتل الجسر ويُضيع كل بيانات الرحلة. لذلك نقصّ (clamp) بدل التفجير.
+_INT16_MIN = -32768
+_INT16_MAX = 32767
+_UINT16_MAX = 65535
+
+
+def _clip_scaled(val: float, lo: int, hi: int, name: str,
+                 _warned: dict = {}) -> int:
+    """قصّ قيمة مُقاسة على حدود العدد الصحيح مع تسجيل تحذير مرة واحدة لكل حقل.
+
+    النطاقات الشائعة:
+      • int16   : [-32768, 32767]  → سرعة cm/s ≤ ±327.67 m/s، تسارع mG ≤ ±32.767 g
+      • uint16  : [0, 65535]       → airspeed cm/s ≤ 655.35 m/s
+    """
+    v = int(val)
+    if v < lo or v > hi:
+        if name not in _warned:
+            print(f"[HIL] WARNING: MAVLink field {name!r} saturated "
+                  f"({v} out of [{lo},{hi}]) — clamping. "
+                  "السرعة/التسارع يتجاوز نطاق MAVLink scaled int.")
+            _warned[name] = True
+        v = max(lo, min(hi, v))
+    return v
+
+
 def build_hil_sensor(t_us: int, accel, gyro, mag,
                      abs_p: float, diff_p: float, alt: float,
                      temp: float = 25.0, fields: int = 0x1FFF) -> bytes:
@@ -191,13 +217,16 @@ def build_hil_gps(t_us: int, lat, lon, alt_m, vn, ve, vd) -> bytes:
     lat_e7 = int(lat * 1e7)
     lon_e7 = int(lon * 1e7)
     alt_mm = int(alt_m * 1000)
-    vel_cm = int(np.sqrt(vn * vn + ve * ve) * 100)
+    vel_cm = _clip_scaled(np.sqrt(vn * vn + ve * ve) * 100,
+                          0, _UINT16_MAX, "hil_gps.vel")
     cog = int(np.degrees(np.arctan2(ve, vn)) * 100) % 36000
     payload = struct.pack(
         "<QBiiiHHHhhhHB",
         t_us, 3, lat_e7, lon_e7, alt_mm,
         250, 400, vel_cm,
-        int(vn * 100), int(ve * 100), int(vd * 100),
+        _clip_scaled(vn * 100, _INT16_MIN, _INT16_MAX, "hil_gps.vn"),
+        _clip_scaled(ve * 100, _INT16_MIN, _INT16_MAX, "hil_gps.ve"),
+        _clip_scaled(vd * 100, _INT16_MIN, _INT16_MAX, "hil_gps.vd"),
         cog, 12,
     )
     return _pack_v2(MSG_HIL_GPS, payload, CRC_HIL_GPS)
@@ -206,17 +235,25 @@ def build_hil_gps(t_us: int, lat, lon, alt_m, vn, ve, vd) -> bytes:
 def build_hil_state_quat(t_us: int, quat, omega,
                           lat, lon, alt_m, vn, ve, vd,
                           accel_body, airspeed: float = 0.0) -> bytes:
+    # ملاحظة: HIL_STATE_QUATERNION في PX4 يُنشر كـ ground-truth فقط
+    # (لا يُغذّي EKF2)، لذا قصّ الحقول هنا آمن ولا يؤثر على تقدير الحالة.
     payload = struct.pack(
         "<Q4f3fiiihhhHHhhh",
         t_us,
         quat[0], quat[1], quat[2], quat[3],
         omega[0], omega[1], omega[2],
         int(lat * 1e7), int(lon * 1e7), int(alt_m * 1000),
-        int(vn * 100), int(ve * 100), int(vd * 100),
-        int(airspeed * 100), 0,
-        int(accel_body[0] / 9.80665 * 1000),
-        int(accel_body[1] / 9.80665 * 1000),
-        int(accel_body[2] / 9.80665 * 1000),
+        _clip_scaled(vn * 100, _INT16_MIN, _INT16_MAX, "hil_state.vn"),
+        _clip_scaled(ve * 100, _INT16_MIN, _INT16_MAX, "hil_state.ve"),
+        _clip_scaled(vd * 100, _INT16_MIN, _INT16_MAX, "hil_state.vd"),
+        _clip_scaled(airspeed * 100, 0, _UINT16_MAX, "hil_state.airspeed"),
+        0,
+        _clip_scaled(accel_body[0] / 9.80665 * 1000,
+                     _INT16_MIN, _INT16_MAX, "hil_state.xacc"),
+        _clip_scaled(accel_body[1] / 9.80665 * 1000,
+                     _INT16_MIN, _INT16_MAX, "hil_state.yacc"),
+        _clip_scaled(accel_body[2] / 9.80665 * 1000,
+                     _INT16_MIN, _INT16_MAX, "hil_state.zacc"),
     )
     return _pack_v2(MSG_HIL_STATE_QUATERNION, payload, CRC_HIL_STATE_QUATERNION)
 
@@ -497,7 +534,12 @@ class HILBridge:
         # ─── فيدباك السيرفو الحقيقي ─────────────────────────────────────
         self._servo_fb_rad = np.zeros(4)       # آخر زاوية مقاسة (rad)
         self._servo_cmd_fb_rad = np.zeros(4)   # الأمر كما رآه الدرايفر (rad)
-        self._servo_fb_t_us = 0                # timestamp آخر SRV_FB
+        self._servo_fb_t_us = 0                # timestamp آخر SRV_FB (sim time)
+        # monotonic timestamp لحساب عمر الفيدباك بمعزل عن _sim_t_us:
+        # _sim_t_us يتبدّل معناه بين wall-clock (warm-up) و t_off+step*dt
+        # (flight loop)، واستخدامه كمرجع للعُمر عبر خيوط يُنشئ هشاشة.
+        # monotonic_ns مصدر موحّد آمن لا يتأثّر بترتيب تهيئة _t_off_us.
+        self._servo_fb_mono_ns = 0
         self._servo_online_mask = 0            # bit-mask للسيرفوهات المتصلة
         self._servo_tx_fail = 0
         self._servo_fb_count = 0               # عدد الرسائل المستلمة
@@ -539,13 +581,31 @@ class HILBridge:
         self._timing_thread: Optional[threading.Thread] = None
         self._timing_stop = threading.Event()
         self._timing_sock: Optional[socket.socket] = None
+        # event يُرفع بمجرد نجاح اتصال 5760 في خيط timing — يستخدم
+        # _set_hitl_param لينتظر جاهزية القناة الصحيحة قبل إرسال PARAM_SET.
+        self._timing_ready = threading.Event()
+        # قفل لتسلسل الكتابة على _timing_sock بين خيط timing (heartbeat)
+        # والخيط الرئيسي (PARAM_SET عند ضبط SYS_HITL).
+        self._timing_sock_lock = threading.Lock()
         self._srv: Optional[socket.socket] = None
+        self._closed = False
 
     def __del__(self):
-        try:
-            os.unlink(self._tmp.name)
-        except (OSError, AttributeError):
-            pass
+        # احتفظ بالخلاص كملاذ أخير، لكن المسار الرئيسي يمرّ عبر close()
+        # الذي يُستدعى من run()/finally. __del__ وحده غير موثوق.
+        self.close()
+
+    def close(self):
+        """تنظيف صريح للموارد (سوكتات + ملف YAML المؤقت)."""
+        if self._closed:
+            return
+        self._closed = True
+        tmp_name = getattr(getattr(self, "_tmp", None), "name", None)
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except (OSError, FileNotFoundError):
+                pass
 
     # ─── الشبكة ──────────────────────────────────────────────────────────────
 
@@ -592,6 +652,7 @@ class HILBridge:
                 sock.connect((self._mavlink_tcp_host, self._mavlink_tcp_port))
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self._timing_sock = sock
+                self._timing_ready.set()
                 print(f"[HIL] Timing reader connected to "
                       f"{self._mavlink_tcp_host}:{self._mavlink_tcp_port}")
                 break
@@ -621,7 +682,8 @@ class HILBridge:
             now = time.monotonic()
             if now - last_hb >= 1.0:
                 try:
-                    sock.send(hb_bytes)
+                    with self._timing_sock_lock:
+                        sock.send(hb_bytes)
                 except OSError:
                     break
                 last_hb = now
@@ -667,6 +729,7 @@ class HILBridge:
                 print(f"[HIL-timing] rx={total_rx}B msgs={top}")
                 last_stat = time.monotonic()
         # الخروج من اللوب: أغلق الـ socket بأمان (shutdown + close)
+        self._timing_ready.clear()
         try:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
@@ -800,6 +863,7 @@ class HILBridge:
             return self._run_impl(flight_csv, timing_csv)
         finally:
             self._cleanup_sockets()
+            self.close()
 
     def _run_impl(self, flight_csv: str, timing_csv: Optional[str] = None) -> dict:
         self.accept()
@@ -922,6 +986,12 @@ class HILBridge:
                         ))
                         self._drain_target(dt)
                         time.sleep(0.005)
+                # إذا تم فصل PX4 أثناء الاستقرار، لا تستمر في الطيران
+                # بصمت — ارفع خطأ واضح لتجنّب محاكاة فارغة طولها duration_s.
+                if not self._running:
+                    raise RuntimeError(
+                        "target disconnected during warm-up settle phase"
+                    )
                 break
 
             if elapsed > self.warmup_max_s and not armed:
@@ -957,6 +1027,9 @@ class HILBridge:
         step = 0
         t = 0.0
 
+        # معدلات الإرسال: HIL_SENSOR يستهدف 250Hz، HIL_STATE 50Hz، HIL_GPS 10Hz.
+        # إذا كان dt يحدّ السقف (مثلاً dt=0.01 → max 100Hz)، فـ sensor_every=1
+        # يعني إرسال في كل خطوة (أي بمعدل 1/dt = 100Hz)، وهو ما يقبله EKF2.
         sensor_every = max(1, int(round(1.0 / (250 * dt))))
         gps_every = max(1, int(round(1.0 / (10 * dt))))
         state_every = max(1, int(round(1.0 / (50 * dt))))
@@ -967,9 +1040,16 @@ class HILBridge:
             self._sim_t_us = _t_off_us + int(t * 1e6)
 
             # ─── قراءة حالة فيدباك CAN ─────────────────────────────────
+            # العمر يُحسب بـ monotonic_ns (مرجع موحّد عبر الخيوط) لا
+            # بـ _sim_t_us الذي يتبدّل معناه بين wall-clock و t_off+step*dt.
+            now_mono_ns = time.monotonic_ns()
             with self._servo_fb_lock:
-                fb_age_us = self._sim_t_us - self._servo_fb_t_us
-                fb_ever_seen = self._servo_fb_t_us > 0
+                fb_mono_ns_snap = self._servo_fb_mono_ns
+                fb_ever_seen = fb_mono_ns_snap > 0
+                fb_age_us = (
+                    (now_mono_ns - fb_mono_ns_snap) // 1000
+                    if fb_ever_seen else 0
+                )
                 fb_fresh = (
                     fb_ever_seen
                     and fb_age_us < self.servo_feedback_timeout_ms * 1000
@@ -1161,15 +1241,47 @@ class HILBridge:
                     self._last_controls = np.array(p["controls"])
                     self._actuator_msg_count += 1
 
+    def _send_via_timing(self, data: bytes) -> bool:
+        """أرسل بايتات MAVLink عبر القناة الكاملة (5760) إذا كانت جاهزة.
+
+        PARAM_SET يجب أن يُرسَل على instance mavlink العادي (5760)، وليس
+        على ``simulator_mavlink`` (4560) الذي يقتصر على رسائل HIL_*.
+        يعود ``True`` عند النجاح، ``False`` إذا لم تكن القناة جاهزة أو
+        فشل الإرسال.
+        """
+        sock = self._timing_sock
+        if sock is None or not self._timing_ready.is_set():
+            return False
+        try:
+            with self._timing_sock_lock:
+                sock.sendall(data)
+            return True
+        except OSError:
+            return False
+
     def _set_hitl_param(self, init_sensors: dict, dt: float) -> None:
         """تفعيل SYS_HITL=1 في PX4 عبر PARAM_SET.
 
         بدون هذا، PX4 على الهاتف يعمل في real flight mode ولا يُرسل
         HIL_ACTUATOR_CONTROLS عبر MAVLink. نُرسل PARAM_SET ثم ننتظر
         PARAM_VALUE للتأكد من التطبيق. نُكرّر حتى الـ timeout.
+
+        **قناة الإرسال**: ``simulator_mavlink`` على 4560 لا يُعالج
+        PARAM_SET (يقتصر على HIL_*). لذلك نرسل عبر ``_timing_sock``
+        (5760) — نفس القناة التي يأتي منها PARAM_VALUE. ننتظر قصيراً
+        لجاهزية القناة قبل الإرسال.
         """
         timeout_s = float(self.cfg.get("warmup", {}).get("hitl_param_timeout_s", 5.0))
-        print(f"[HIL] Setting SYS_HITL=1 (timeout={timeout_s:.1f}s)...")
+        print(f"[HIL] Setting SYS_HITL=1 (timeout={timeout_s:.1f}s) via "
+              f"TCP {self._mavlink_tcp_port} (param channel)...")
+
+        # انتظر جاهزية قناة 5760 قبل إرسال PARAM_SET (الخيط يحاول الاتصال
+        # حتى 30s داخل _timing_reader_loop). إن فشل، نحذّر ونتابع —
+        # airframe rcS قد يكون ضبط SYS_HITL بالفعل.
+        if self.timing_enabled and not self._timing_ready.wait(timeout=3.0):
+            print("[HIL] WARNING: timing channel not ready — PARAM_SET may "
+                  "not reach PX4. Ensure 'adb reverse tcp:5760 tcp:5760' "
+                  "is set up and the PX4 mavlink instance is listening.")
 
         with self._param_lock:
             self._last_param_values.pop("SYS_HITL", None)
@@ -1177,6 +1289,7 @@ class HILBridge:
         next_send = 0.0
         attempts = 0
         set_ok = False
+        param_set_bytes = build_param_set("SYS_HITL", 1, MAV_PARAM_TYPE_INT32)
 
         while time.monotonic() < t_end and self._running:
             now = time.monotonic()
@@ -1191,8 +1304,14 @@ class HILBridge:
             ))
 
             if now >= next_send:
-                self._send(build_param_set("SYS_HITL", 1,
-                                           MAV_PARAM_TYPE_INT32))
+                # يُرسَل على قناة 5760 (param channel). إن فشل الإرسال،
+                # نحاول مرة أخرى في الدورة التالية — قد تكون القناة غير
+                # جاهزة بعد.
+                if not self._send_via_timing(param_set_bytes):
+                    # محاولة احتياطية على 4560 (في حالة نادرة حيث يكون
+                    # 5760 غير متاحاً لكن PX4 يسمح بـ PARAM_SET على
+                    # simulator_mavlink عبر mavlink stream router).
+                    self._send(param_set_bytes)
                 attempts += 1
                 next_send = now + 0.5  # retry كل 0.5s
 
@@ -1212,7 +1331,8 @@ class HILBridge:
         else:
             print(f"[HIL] WARNING: SYS_HITL not confirmed after {attempts} attempts "
                   f"(timeout {timeout_s:.1f}s). Continuing anyway — "
-                  f"PX4 may already be in HIL or may ignore the param.")
+                  f"PX4 may already be in HIL (rcS sets SYS_HITL=1 for the "
+                  f"HITL airframe) or may ignore the param.")
 
     def _calibrate_servo_zero(self, init_sensors: dict, state: np.ndarray,
                               dt: float) -> None:
@@ -1235,13 +1355,18 @@ class HILBridge:
         settle_end = t_start + self.servo_zero_settle_s
         sample_end = settle_end + self.servo_zero_sample_s
 
-        self._zero_calib_samples.clear()
+        with self._servo_fb_lock:
+            self._zero_calib_samples.clear()
 
         while time.monotonic() < sample_end:
             now = time.monotonic()
             if not self._zero_calib_active and now >= settle_end:
-                self._zero_calib_active = True
-                self._zero_calib_samples.clear()
+                # تفعيل التقاط العيّنات داخل القفل مع مسح أي عيّنات
+                # سابقة من مرحلة الاستقرار (أي `online_mask` تسرّب قبل
+                # انتهاء settle_end).
+                with self._servo_fb_lock:
+                    self._zero_calib_active = True
+                    self._zero_calib_samples.clear()
 
             # wall-clock موحّد عبر كل مراحل warm-up (auto-zero/param/warmup/flight).
             # الزيادة الثابتة +5ms السابقة كانت تبدأ من 0 وتُحدث قفزة هائلة عند
@@ -1267,10 +1392,12 @@ class HILBridge:
             self._drain_target(dt)
             time.sleep(0.005)
 
-        self._zero_calib_active = False
-
-        samples = list(self._zero_calib_samples)
-        self._zero_calib_samples.clear()
+        # إنهاء الالتقاط + سحب العيّنات ذرّياً تحت القفل نفسه لمنع
+        # append من خيط timing بعد تعطيل الالتقاط (race محتمل في CPython).
+        with self._servo_fb_lock:
+            self._zero_calib_active = False
+            samples = list(self._zero_calib_samples)
+            self._zero_calib_samples.clear()
 
         if len(samples) < 3:
             print(f"[HIL] Servo auto-zero: insufficient samples "
@@ -1343,10 +1470,12 @@ class HILBridge:
         fb_deg = fb_deg_raw - zero_off_deg
         err_deg = cmd_deg - fb_deg
 
+        fb_mono_ns = time.monotonic_ns()
         with self._servo_fb_lock:
             self._servo_cmd_fb_rad = np.radians(cmd_deg)
             self._servo_fb_rad = np.radians(fb_deg)
-            self._servo_fb_t_us = self._sim_t_us
+            self._servo_fb_t_us = self._sim_t_us   # للحفاظ على التوافق (يستخدم للعرض/CSV)
+            self._servo_fb_mono_ns = fb_mono_ns    # مصدر العمر الموثوق
             self._servo_online_mask = online_mask
             self._servo_tx_fail = tx_fail
             self._servo_fb_count += 1
