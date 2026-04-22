@@ -531,8 +531,8 @@ class MpcController:
 
         # Cruise→dive blend: 0=level flight, 1=full LOS
         progress = 1.0 - dx_to_target / max(self.target_x, 1.0)
-        p0 = self._cruise_progress       # 0.80 — start dive
-        p1 = min(p0 + 0.10, 0.95)        # 0.90 — full LOS
+        p0 = self._cruise_progress       # default 0.65 — start dive
+        p1 = min(p0 + 0.10, 0.95)        # p0 + 0.10 — full LOS
         if progress < p0:
             s_dive = 0.0
         elif progress > p1:

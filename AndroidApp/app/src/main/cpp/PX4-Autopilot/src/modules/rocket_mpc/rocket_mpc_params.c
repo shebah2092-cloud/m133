@@ -117,6 +117,28 @@ PARAM_DEFINE_FLOAT(ROCKET_HTRGT, 0.0f);
  */
 PARAM_DEFINE_FLOAT(ROCKET_IMP_ANG, -30.0f);
 
+/**
+ * Cruise→dive transition progress
+ *
+ * Fraction of downrange-to-target at which the LOS guidance starts
+ * blending from level cruise flight (γ=0) to the impact-angle dive
+ * trajectory. The dive is fully active at progress = min(p+0.10, 0.95),
+ * with a smooth Hermite blend in between.
+ *
+ * Lower values start the dive earlier (good for steep impact angles
+ * and longer-range targets); higher values keep the vehicle in cruise
+ * longer (good for shallow impact angles or shorter ranges).
+ *
+ * Must match autopilot.mpc.cruise_progress in the Python simulation
+ * config to keep sim-vs-flight guidance timing consistent.
+ *
+ * @min 0.3
+ * @max 0.95
+ * @decimal 2
+ * @group Rocket MPC
+ */
+PARAM_DEFINE_FLOAT(ROCKET_CRUISE_P, 0.65f);
+
 /* ===================================================================
  *  Fin limits
  *

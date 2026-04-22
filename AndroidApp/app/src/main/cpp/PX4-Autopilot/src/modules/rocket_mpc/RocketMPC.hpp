@@ -207,6 +207,7 @@ private:
 		(ParamFloat<px4::params::ROCKET_YTRGT>)     _param_ytrgt,
 		(ParamFloat<px4::params::ROCKET_HTRGT>)     _param_htrgt,
 		(ParamFloat<px4::params::ROCKET_IMP_ANG>)   _param_imp_ang,
+		(ParamFloat<px4::params::ROCKET_CRUISE_P>)  _param_cruise_p,
 
 		// Mass / propulsion
 		(ParamFloat<px4::params::ROCKET_MASS_F>)    _param_mass_full,
