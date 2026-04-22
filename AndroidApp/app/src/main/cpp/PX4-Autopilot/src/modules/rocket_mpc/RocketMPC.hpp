@@ -260,9 +260,6 @@ private:
 		(ParamFloat<px4::params::ROCKET_IZZ_F>)     _param_izz_f,
 		(ParamFloat<px4::params::ROCKET_IZZ_D>)     _param_izz_d,
 
-		// Servo
-		(ParamFloat<px4::params::ROCKET_TAU_SRV>)   _param_tau_servo,
-
 		// MHE
 		(ParamFloat<px4::params::ROCKET_MHE_QG>)    _param_mhe_qg,
 
