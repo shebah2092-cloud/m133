@@ -335,8 +335,6 @@ void RocketMPC::_reset_flight_state()
 	// Actuator / servo caches (physical commands from last solve)
 	_de_act = 0.0f; _dr_act = 0.0f; _da_act = 0.0f;
 	memset(_last_fins, 0, sizeof(_last_fins));
-	memset(_last_fins_act, 0, sizeof(_last_fins_act));
-	_last_srv_fb_pub_time = 0;
 	_last_de = 0.0f; _last_dr = 0.0f; _last_da = 0.0f;
 	_last_mpc_solve_time = 0;
 
@@ -1211,42 +1209,12 @@ void RocketMPC::Run()
 			_actuator_servos_pub.publish(as);
 		}
 
-		// ---- Synthetic SRV_FB (HITL/SITL only) ----
-		// Emulates what the real xqpower_can driver publishes on hardware
-		// (debug_array id=1, name="SRV_FB"). Lets HIL verify servo-tracking
-		// behaviour without a physical CAN bus. Guarded to sim_path so the
-		// real hardware publisher remains the sole authority in flight.
-		if (sim_path) {
-			const float tau = math::max(_param_tau_servo.get(), 1e-3f);
-			const float alpha = 1.0f - expf(-_dt_measured / tau);
-			for (int i = 0; i < 4; ++i) {
-				_last_fins_act[i] += alpha * (_last_fins[i] - _last_fins_act[i]);
-			}
-
-			const hrt_abstime min_pub_interval = 20_ms;  // 50 Hz max
-			if ((now - _last_srv_fb_pub_time) >= min_pub_interval) {
-				_last_srv_fb_pub_time = now;
-
-				debug_array_s srv_fb{};
-				srv_fb.timestamp = now;
-				srv_fb.id = 1;
-				const char name[] = "SRV_FB";
-				memset(srv_fb.name, 0, sizeof(srv_fb.name));
-				memcpy(srv_fb.name, name, sizeof(name) - 1);
-
-				for (int i = 0; i < 4; ++i) {
-					const float cmd_deg = math::degrees(_last_fins[i]);
-					const float fb_deg  = math::degrees(_last_fins_act[i]);
-					srv_fb.data[i]     = cmd_deg;          // data[0..3]  = cmd_deg
-					srv_fb.data[4 + i] = fb_deg;           // data[4..7]  = fb_deg
-					srv_fb.data[8 + i] = cmd_deg - fb_deg; // data[8..11] = err_deg
-				}
-				srv_fb.data[12] = _armed ? 0x0F : 0x00;    // online_mask
-				srv_fb.data[13] = 0.0f;                    // tx_fail_count
-
-				_srv_fb_pub.publish(srv_fb);
-			}
-		}
+		// Servo feedback (debug_array id=1, name="SRV_FB") is published
+		// exclusively by the xqpower_can driver from real CAN measurements.
+		// In HIL without hardware, the Python simulator applies its own
+		// first-order servo lag model to the commands in _actuator_servos_pub
+		// and logs the model trace on its side — PX4 does not emit a
+		// synthetic copy, keeping id=1 a single source of truth.
 	}
 
 	// ---- Publish status (reuse rocket_gnc_status topic) ----
