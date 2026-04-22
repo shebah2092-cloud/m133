@@ -437,8 +437,6 @@ static void start_px4_modules(const std::string& storage_path) {
                 p = param_find(rp.name);
                 if (p != PARAM_INVALID) { param_set(p, &rp.val); }
             }
-            p = param_find("ROCKET_GND_TEST");
-            if (p != PARAM_INVALID) { int32_t v = 0; param_set(p, &v); }
 
             // ============================================================
             // معاملات خاصة بالـ airframe (تختلف بين 22000/22001/22002)

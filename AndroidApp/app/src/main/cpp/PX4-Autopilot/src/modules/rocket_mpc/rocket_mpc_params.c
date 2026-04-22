@@ -368,18 +368,6 @@ PARAM_DEFINE_FLOAT(ROCKET_MPC_TF, 4.0f);
  *  Test mode
  * =================================================================== */
 
-/**
- * Ground test mode
- *
- * 0 = normal flight.
- * 1 = ground test mode.
- *
- * @min 0
- * @max 1
- * @group Rocket MPC
- */
-PARAM_DEFINE_INT32(ROCKET_GND_TEST, 0);
-
 /* ===================================================================
  *  SITL workarounds
  * =================================================================== */
