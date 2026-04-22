@@ -112,10 +112,14 @@ python hil_runner.py --baseline-only
 بعد تشغيل HIL، يجب أن ترى:
 
 ```
-[HIL] Servo feedback: N frames, online_mask=0x0F, tx_fail=0
+[HIL] Servo feedback: N frames, fallback_to_cmd=K steps, online_mask=0x0F, tx_fail=0
 ```
 
 - `N > 0` — فيدباك CAN يصل (مسار الرصد يعمل).
+- `fallback_to_cmd=0` في الوضع الحالي دائماً — العدّاد محجوز لـ Phase 2
+  (closed-loop) حيث سيعدّ الخطوات التي عادت إلى cmd fallback عند stale
+  feedback. في monitor-only لا يوجد fallback لأن الديناميكا لا تستخدم
+  الفيدباك أصلاً.
 - `online_mask=0x0F` — جميع السيرفوهات الأربعة متصلة.
 - `tx_fail=0` — لا فشل إرسال CAN.
 
