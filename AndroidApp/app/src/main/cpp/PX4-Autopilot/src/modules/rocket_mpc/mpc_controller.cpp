@@ -333,7 +333,6 @@ void MpcController::reset()
 	_last_delta_e = 0.0f;
 	_last_delta_r = 0.0f;
 	_last_delta_a = 0.0f;
-	memset(_last_fins, 0, sizeof(_last_fins));
 	_last_solve_t = -1.0f;
 	_last_solve_time_ms = 0.0f;
 	memset(_x_traj, 0, sizeof(_x_traj));
@@ -376,7 +375,6 @@ MpcSolveResult MpcController::solve(const double x_mpc[MPC_NX],
 				    float x_pos, float altitude)
 {
 	MpcSolveResult result{};
-	memcpy(result.fins, _last_fins, sizeof(_last_fins));
 	result.delta_e = _last_delta_e;
 	result.delta_r = _last_delta_r;
 	result.delta_a = _last_delta_a;
@@ -625,19 +623,9 @@ MpcSolveResult MpcController::solve(const double x_mpc[MPC_NX],
 	_last_delta_a = da;
 	_last_solve_t = t_flight;
 
-	// X-fin mixing: [da-de-dr, da-de+dr, da+de+dr, da+de-dr]
-	float fins[4] = {
-		da - de - dr,
-		da - de + dr,
-		da + de + dr,
-		da + de - dr,
-	};
-	memcpy(_last_fins, fins, sizeof(fins));
-
-	result.fins[0] = fins[0];
-	result.fins[1] = fins[1];
-	result.fins[2] = fins[2];
-	result.fins[3] = fins[3];
+	// X-fin mixing is intentionally NOT done here: RocketMPC.cpp owns the
+	// per-fin saturation clamp and MHE back-solve, so it mixes the three
+	// virtual channels right before publishing to the servos.
 	result.delta_e = de;
 	result.delta_r = dr;
 	result.delta_a = da;
