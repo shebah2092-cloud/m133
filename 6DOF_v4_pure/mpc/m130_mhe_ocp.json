@@ -3778,7 +3778,7 @@
     "ros_opts": null,
     "simulink_opts": null,
     "solver_options": {
-        "N_horizon": 25,
+        "N_horizon": 20,
         "Tsim": 0.02,
         "adaptive_levenberg_marquardt_lam": 5.0,
         "adaptive_levenberg_marquardt_mu0": 0.001,

@@ -54,7 +54,7 @@ def create_m130_mhe_ocp(estimation_cfg=None) -> AcadosOcp:
     est_cfg = estimation_cfg or {}
     mhe_cfg = est_cfg.get("mhe", {})
 
-    N_mhe = int(mhe_cfg.get("horizon_steps", 25))
+    N_mhe = int(mhe_cfg.get("horizon_steps", 20))
     dt = float(mhe_cfg.get("horizon_dt", 0.02))
 
     model = create_m130_mhe_model()
