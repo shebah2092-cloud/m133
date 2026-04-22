@@ -60,6 +60,7 @@ MSG_DEBUG_VECT = 250
 MSG_DEBUG_FLOAT_ARRAY = 350  # SRV_FB من xqpower_can
 MSG_COMMAND_LONG = 76
 MSG_COMMAND_ACK = 77
+MSG_PARAM_REQUEST_READ = 20
 MSG_PARAM_SET = 23
 MSG_PARAM_VALUE = 22
 
@@ -68,6 +69,7 @@ CRC_HIL_SENSOR = 108
 CRC_HIL_GPS = 124
 CRC_HIL_STATE_QUATERNION = 4
 CRC_COMMAND_LONG = 152
+CRC_PARAM_REQUEST_READ = 214
 CRC_PARAM_SET = 168
 CRC_PARAM_VALUE = 220
 
@@ -131,6 +133,19 @@ def build_command_long(command: int, target_sys: int = 1, target_comp: int = 1,
                           command,
                           target_sys, target_comp, confirmation)
     return _pack_v2(MSG_COMMAND_LONG, payload, CRC_COMMAND_LONG,
+                    sys_id=GCS_SYS_ID, comp_id=GCS_COMP_ID)
+
+
+def build_param_request_read(param_id: str,
+                              target_sys: int = 1,
+                              target_comp: int = 1) -> bytes:
+    """PARAM_REQUEST_READ (msg 20): يطلب قيمة param واحد من PX4.
+    الحقول: param_index(h) + target_sys(B) + target_comp(B) + param_id[16].
+    نُمرّر ``param_index=-1`` لإجبار PX4 على البحث بالاسم.
+    الاستجابة هي PARAM_VALUE على نفس القناة (5760 mavlink العادي)."""
+    name = param_id.encode("ascii")[:16].ljust(16, b"\x00")
+    payload = struct.pack("<hBB16s", -1, target_sys, target_comp, name)
+    return _pack_v2(MSG_PARAM_REQUEST_READ, payload, CRC_PARAM_REQUEST_READ,
                     sys_id=GCS_SYS_ID, comp_id=GCS_COMP_ID)
 
 
@@ -1259,41 +1274,116 @@ class HILBridge:
         except OSError:
             return False
 
-    def _set_hitl_param(self, init_sensors: dict, dt: float) -> None:
-        """تفعيل SYS_HITL=1 في PX4 عبر PARAM_SET.
+    def _await_param_value(self, name: str, timeout_s: float,
+                           init_sensors: dict, dt: float
+                           ) -> Optional[dict]:
+        """ينتظر وصول PARAM_VALUE للـ param المحدّد على قناة 5760.
 
-        بدون هذا، PX4 على الهاتف يعمل في real flight mode ولا يُرسل
-        HIL_ACTUATOR_CONTROLS عبر MAVLink. نُرسل PARAM_SET ثم ننتظر
-        PARAM_VALUE للتأكد من التطبيق. نُكرّر حتى الـ timeout.
-
-        **قناة الإرسال**: ``simulator_mavlink`` على 4560 لا يُعالج
-        PARAM_SET (يقتصر على HIL_*). لذلك نرسل عبر ``_timing_sock``
-        (5760) — نفس القناة التي يأتي منها PARAM_VALUE. ننتظر قصيراً
-        لجاهزية القناة قبل الإرسال.
+        خلال الانتظار، يستمر في إرسال heartbeat + HIL_SENSOR على 4560
+        للحفاظ على تسليم EKF وتسلسل الـ warm-up. يعود بمُحتوى
+        PARAM_VALUE إذا وصل، أو ``None`` عند انتهاء المهلة.
         """
+        t_end = time.monotonic() + timeout_s
+        while time.monotonic() < t_end and self._running:
+            self._sim_t_us = int(time.monotonic() * 1e6)
+            self._send(build_heartbeat())
+            self._send(build_hil_sensor(
+                self._sim_t_us,
+                init_sensors["accel_body"], init_sensors["gyro_body"],
+                init_sensors["mag_body"], init_sensors["baro_p"],
+                init_sensors["diff_p"], init_sensors["pressure_alt"],
+            ))
+            self._drain_target(dt)
+
+            with self._param_lock:
+                pv = self._last_param_values.get(name)
+            if pv is not None:
+                return pv
+
+            time.sleep(0.02)
+        return None
+
+    def _set_hitl_param(self, init_sensors: dict, dt: float) -> None:
+        """يتحقّق من أن ``SYS_HITL=1`` في PX4، ويَضبطه إذا لم يكن كذلك.
+
+        **معمارية القناة**:
+          • 4560 (``simulator_mavlink``): يستقبل ``HIL_SENSOR``/``HIL_GPS``/
+            ``HIL_STATE_QUATERNION`` فقط. ``switch`` في
+            ``SimulatorMavlink::handle_message`` ليس فيه ``case
+            MAVLINK_MSG_ID_PARAM_SET``. أي ``PARAM_SET`` يصل هنا يُتجاهل
+            صامتاً.
+          • 5760 (``mavlink`` العادي): يحوي معالج الـ parameters (``_parameters``
+            sub-module في MAVLink v2). PARAM_SET/PARAM_REQUEST_READ/PARAM_VALUE
+            كلها على هذه القناة فقط.
+
+        **تسلسل Read-then-Set** (بديل حذف الدالة كلياً):
+          1) ننتظر جاهزية قناة 5760 (``_timing_ready``).
+          2) ``PARAM_REQUEST_READ("SYS_HITL")`` → PX4 يستجيب بـ PARAM_VALUE.
+             إذا كانت القيمة 1 أصلاً (airframe rcS ضبطها في init)، نخرج
+             بدون PARAM_SET.
+          3) إلا نرسل ``PARAM_SET(SYS_HITL=1)`` ونعيد الاستعلام حتى
+             ``hitl_param_timeout_s``.
+
+        **لا fallback على 4560**: الفشل هناك dead silent (لا acceptor)،
+        فالتجربة تُلوّث اللوج بدون فائدة. إن كانت 5760 غير متاحة، نسجّل
+        تحذيراً واضحاً ونتوقّف عن محاولة set — HIL يعتمد في هذه الحالة
+        على airframe rcS وحده.
+        """
+        if not self.timing_enabled:
+            print("[HIL] timing channel disabled — skipping SYS_HITL "
+                  "verify/set. HIL relies on airframe rcS "
+                  "('param set SYS_HITL 1' in init.d/airframes/...).")
+            return
+
         timeout_s = float(self.cfg.get("warmup", {}).get("hitl_param_timeout_s", 5.0))
-        print(f"[HIL] Setting SYS_HITL=1 (timeout={timeout_s:.1f}s) via "
-              f"TCP {self._mavlink_tcp_port} (param channel)...")
+        print(f"[HIL] Verifying SYS_HITL=1 on TCP {self._mavlink_tcp_port} "
+              f"(param channel, timeout={timeout_s:.1f}s)...")
 
-        # انتظر جاهزية قناة 5760 قبل إرسال PARAM_SET (الخيط يحاول الاتصال
-        # حتى 30s داخل _timing_reader_loop). إن فشل، نحذّر ونتابع —
-        # airframe rcS قد يكون ضبط SYS_HITL بالفعل.
-        if self.timing_enabled and not self._timing_ready.wait(timeout=3.0):
-            print("[HIL] WARNING: timing channel not ready — PARAM_SET may "
-                  "not reach PX4. Ensure 'adb reverse tcp:5760 tcp:5760' "
-                  "is set up and the PX4 mavlink instance is listening.")
+        # انتظر جاهزية قناة 5760. خيط _timing_reader_loop يحاول الاتصال
+        # حتى 30s، لكن عادةً يتّصل خلال بضع ميلي ثوان لأن _timing_thread
+        # بدأ عند accept() وتبعه _calibrate_servo_zero (~6s).
+        if not self._timing_ready.wait(timeout=3.0):
+            print("[HIL] WARNING: param channel (TCP 5760) not ready. "
+                  "Cannot verify or set SYS_HITL. Ensure the PX4 mavlink "
+                  "instance is running and 'adb reverse tcp:5760 tcp:5760' "
+                  "is configured. Falling back to airframe rcS for "
+                  "SYS_HITL (HITL airframes set it in init).")
+            return
 
+        # ─── خطوة 1: READ ─────────────────────────────────────────────
+        # نُفرغ أي PARAM_VALUE قديم من جلسة سابقة، ثم نطلب القيمة
+        # الحالية من PX4 قبل اتخاذ أي إجراء.
         with self._param_lock:
             self._last_param_values.pop("SYS_HITL", None)
+
+        if not self._send_via_timing(build_param_request_read("SYS_HITL")):
+            print("[HIL] WARNING: failed to send PARAM_REQUEST_READ on "
+                  "param channel. Skipping SYS_HITL verify/set.")
+            return
+
+        pv = self._await_param_value("SYS_HITL", 1.5, init_sensors, dt)
+        if pv is not None and int(pv.get("value", -1)) == 1:
+            print("[HIL] SYS_HITL=1 already set (airframe rcS) — "
+                  "no PARAM_SET needed.")
+            return
+
+        current = "unknown" if pv is None else str(int(pv.get("value", -1)))
+        print(f"[HIL] SYS_HITL current value = {current} — sending "
+              f"PARAM_SET to enforce SYS_HITL=1...")
+
+        # ─── خطوة 2: SET + Retry حتى PARAM_VALUE يؤكّد =1 ────────────
+        with self._param_lock:
+            self._last_param_values.pop("SYS_HITL", None)
+
         t_end = time.monotonic() + timeout_s
         next_send = 0.0
         attempts = 0
         set_ok = False
         param_set_bytes = build_param_set("SYS_HITL", 1, MAV_PARAM_TYPE_INT32)
+        param_read_bytes = build_param_request_read("SYS_HITL")
 
         while time.monotonic() < t_end and self._running:
             now = time.monotonic()
-            # استخدم wall-clock time لتجنّب drift في timestamps → STALE في PX4
             self._sim_t_us = int(time.monotonic() * 1e6)
             self._send(build_heartbeat())
             self._send(build_hil_sensor(
@@ -1304,16 +1394,16 @@ class HILBridge:
             ))
 
             if now >= next_send:
-                # يُرسَل على قناة 5760 (param channel). إن فشل الإرسال،
-                # نحاول مرة أخرى في الدورة التالية — قد تكون القناة غير
-                # جاهزة بعد.
                 if not self._send_via_timing(param_set_bytes):
-                    # محاولة احتياطية على 4560 (في حالة نادرة حيث يكون
-                    # 5760 غير متاحاً لكن PX4 يسمح بـ PARAM_SET على
-                    # simulator_mavlink عبر mavlink stream router).
-                    self._send(param_set_bytes)
+                    print("[HIL] WARNING: param channel dropped during "
+                          "PARAM_SET retry — aborting set loop.")
+                    break
+                # نُلحق PARAM_REQUEST_READ لإجبار PARAM_VALUE حتى لو
+                # لم تبثّ PX4 التغيير تلقائياً (بعض إعدادات mavlink
+                # تبثّ PARAM_VALUE فقط عند استفسار صريح).
+                self._send_via_timing(param_read_bytes)
                 attempts += 1
-                next_send = now + 0.5  # retry كل 0.5s
+                next_send = now + 0.5
 
             self._drain_target(dt)
 
@@ -1326,13 +1416,15 @@ class HILBridge:
             time.sleep(0.005)
 
         if set_ok:
-            print(f"[HIL] SYS_HITL=1 confirmed by PX4 (after {attempts} attempts). "
-                  f"NOTE: PX4 may need a restart from the app to enter HIL mode.")
+            print(f"[HIL] SYS_HITL=1 confirmed by PX4 after {attempts} "
+                  f"PARAM_SET attempts. NOTE: PX4 may need a restart from "
+                  f"the app to enter HIL mode.")
         else:
-            print(f"[HIL] WARNING: SYS_HITL not confirmed after {attempts} attempts "
-                  f"(timeout {timeout_s:.1f}s). Continuing anyway — "
-                  f"PX4 may already be in HIL (rcS sets SYS_HITL=1 for the "
-                  f"HITL airframe) or may ignore the param.")
+            print(f"[HIL] WARNING: SYS_HITL not confirmed as 1 after "
+                  f"{attempts} PARAM_SET attempts on TCP "
+                  f"{self._mavlink_tcp_port} (timeout {timeout_s:.1f}s). "
+                  f"If abort_on_no_actuator=True, warm-up will fail unless "
+                  f"airframe rcS sets SYS_HITL=1 itself.")
 
     def _calibrate_servo_zero(self, init_sensors: dict, state: np.ndarray,
                               dt: float) -> None:
