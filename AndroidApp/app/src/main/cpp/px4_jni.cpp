@@ -204,7 +204,7 @@ static void start_px4_modules(const std::string& storage_path) {
 
         // ===== HITL: CAL_ACC/GYRO must use sim sensor ID (runs EVERY start) =====
         // When SYS_HITL=1, sensor_combined must use HIL_SENSOR data (device 1310988)
-        // not the real phone sensors (device 1310724). Without this, rocket_gnc reads
+        // not the real phone sensors (device 1310724). Without this, rocket_mpc reads
         // real phone accel (desk = 0g body-X) and never detects launch.
         if (sys_hitl == 1) {
             p = param_find("CAL_ACC0_ID");
@@ -417,19 +417,10 @@ static void start_px4_modules(const std::string& storage_path) {
             p = param_find("CA_SV_CS3_TRQ_Y");
             if (p != PARAM_INVALID) { float v = 0.25f; param_set(p, &v); }
 
-            // -- Rocket GNC Parameters — M130 --
+            // -- Rocket MPC Parameters — M130 --
             struct { const char* name; float val; } rocket_params[] = {
-                { "ROCKET_T_STG1",   15.0f  },
                 { "ROCKET_T_CTRL",    0.3f  },
-                { "ROCKET_SET_ALT", 120.0f  },
-                { "ROCKET_NPN",       2.7f  },
                 { "ROCKET_IMP_ANG", -30.0f  },
-                { "ROCKET_TAU_PN1",  20.0f  },
-                { "ROCKET_K_YAW",   0.008f  },
-                { "ROCKET_K_VZ",    14.0f   },
-                { "ROCKET_AYC_LIM",   2.0f  },
-                { "ROCKET_APC_LIM",   8.0f  },
-                { "ROCKET_MAX_DEFL",  0.436f},
             };
             for (auto& rp : rocket_params) {
                 p = param_find(rp.name);
@@ -710,7 +701,7 @@ static void start_px4_modules(const std::string& storage_path) {
     }
 
     // 13. Logger — MUST start after all publishing modules
-    // rocket_gnc publishes initial rocket_gnc_status in init() so orb_exists() sees it.
+    // rocket_mpc publishes initial rocket_gnc_status in init() so orb_exists() sees it.
     usleep(1000000); // 1s — ensure all work queue modules have run at least once
 
     const char* log_argv[] = {"logger", "start", "-f", "-t", nullptr};
