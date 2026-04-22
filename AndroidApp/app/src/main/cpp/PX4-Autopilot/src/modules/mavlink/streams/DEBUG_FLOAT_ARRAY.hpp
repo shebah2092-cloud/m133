@@ -142,29 +142,17 @@ private:
 			msg.data[29] = gnc.vel_down;
 			msg.data[30] = gnc.vel_crossrange;
 
-			// New fields - controller state
-			msg.data[31] = gnc.wz_filter;
-			msg.data[32] = gnc.wy_filter;
-			msg.data[33] = gnc.ayb_filter;
-			msg.data[34] = gnc.azb_filter;
-			msg.data[35] = gnc.out_integ_yaw;
-			msg.data[36] = gnc.apc_accum;
+			// Navigation
+			msg.data[31] = gnc.bearing_deg;
+			msg.data[32] = gnc.target_range_remaining;
 
-			// New fields - PN guidance state
-			msg.data[37] = gnc.pn2_b1;
-			msg.data[38] = gnc.pn2_b_int;
-			msg.data[39] = gnc.bearing_deg;
-			msg.data[40] = gnc.target_range_remaining;
+			// Event flags
+			msg.data[33] = gnc.launched ? 1.0f : 0.0f;
 
-			// New fields - event flags
-			msg.data[41] = gnc.alpha_protection_active ? 1.0f : 0.0f;
-
-			// dt measurement (section 9.6)
-			msg.data[42] = gnc.dt_actual;
-			msg.data[43] = gnc.dt_min;
-			msg.data[44] = gnc.dt_max;
-
-			msg.data[45] = gnc.launched ? 1.0f : 0.0f;
+			// dt measurement
+			msg.data[34] = gnc.dt_actual;
+			msg.data[35] = gnc.dt_min;
+			msg.data[36] = gnc.dt_max;
 
 			mavlink_msg_debug_float_array_send_struct(_mavlink->get_channel(), &msg);
 			sent = true;
