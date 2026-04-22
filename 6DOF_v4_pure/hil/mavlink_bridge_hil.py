@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import logging
 import os
 import socket
@@ -90,15 +91,18 @@ def _x25_crc(data: bytes, crc: int = 0xFFFF) -> int:
     return crc
 
 
-_seq_counter = [0]
+# عدّاد تسلسل MAVLink مشترك (thread-safe) — خيط timing على 5760 يُرسل
+# heartbeats بالتوازي مع الخيط الرئيسي على 4560.
+_seq_lock = threading.Lock()
+_seq_iter = itertools.count()
 
 
 def _pack_v2(msg_id: int, payload: bytes, crc_extra: int,
              sys_id: int = SYS_ID, comp_id: int = COMP_ID) -> bytes:
     trimmed = payload.rstrip(b"\x00")
     tlen = len(trimmed)
-    seq_num = _seq_counter[0] & 0xFF
-    _seq_counter[0] = (_seq_counter[0] + 1) & 0xFF
+    with _seq_lock:
+        seq_num = next(_seq_iter) & 0xFF
     header = struct.pack(
         "<BBBBBBBHB",
         MAVLINK_STX_V2, tlen, 0, 0, seq_num,
@@ -397,6 +401,11 @@ class HILBridge:
         self.clear_flight_termination = bool(
             warmup.get("clear_flight_termination", True)
         )
+        # إذا لم يصل أي HIL_ACTUATOR_CONTROLS خلال warm-up، افشل صراحة
+        # (PX4 على الأرجح ليس في HIL mode — راجع _run_impl لرسالة التعليمات).
+        self.abort_on_no_actuator = bool(
+            warmup.get("abort_on_no_actuator", True)
+        )
 
         # ─── إعدادات فيدباك السيرفو ──────────────────────────────────────
         # HIL يعمل في closed_loop فقط: الزاوية المقاسة من السيرفوهات
@@ -434,7 +443,7 @@ class HILBridge:
         self.servo_auto_zero = bool(hil_cfg.get("servo_auto_zero", True))
         self.servo_zero_settle_s = float(hil_cfg.get("servo_zero_settle_s", 4.0))
         self.servo_zero_sample_s = float(hil_cfg.get("servo_zero_sample_s", 2.0))
-        self.servo_zero_max_deg = float(hil_cfg.get("servo_zero_max_deg", 30.0))
+        self.servo_zero_max_deg = float(hil_cfg.get("servo_zero_max_deg", 10.0))
 
         # تحميل إعدادات المحاكاة وضبط وضع "none" (لا تحكم داخلي)
         with open(sim_cfg_path, "r", encoding="utf-8") as f:
@@ -553,6 +562,9 @@ class HILBridge:
               f"start PX4 on target device...")
         self._sock, addr = srv.accept()
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # non-blocking دائمًا بعد القبول — _recv_nonblock يعتمد على هذا
+        # بدلاً من تبديل blocking state في كل استدعاء.
+        self._sock.setblocking(False)
         srv.close()
         self._srv = None
         print(f"[HIL] Target connected from {addr}")
@@ -713,10 +725,12 @@ class HILBridge:
             self._running = False
 
     def _recv_nonblock(self) -> list:
+        # الـ socket مضبوط على non-blocking مرّة واحدة بعد accept()؛ لا حاجة
+        # لتبديل الحالة في كل استدعاء (anti-pattern سابق كان يُسرّب حالة بين
+        # _send/_recv إذا تداخلا من خيوط مختلفة).
         if self._sock is None:
             return []
         try:
-            self._sock.setblocking(False)
             data = self._sock.recv(4096)
             if not data:
                 self._running = False
@@ -727,11 +741,6 @@ class HILBridge:
         except (ConnectionResetError, BrokenPipeError, OSError):
             self._running = False
             return []
-        finally:
-            try:
-                self._sock.setblocking(True)
-            except OSError:
-                pass
 
     # ─── بناء بيانات الحسّاسات ───────────────────────────────────────────────
 
@@ -915,6 +924,22 @@ class HILBridge:
         print(f"[HIL] Warm-up done in {total_wu:.1f}s  "
               f"(armed={armed}, actuator_msgs={self._actuator_msg_count})")
 
+        # إذا خرجنا من warm-up بدون أي HIL_ACTUATOR_CONTROLS، فغالباً PX4
+        # ليس في HIL mode (SYS_HITL=0 أو لم تُحفظ بعد restart) — تشغيل
+        # الحلقة في هذه الحالة يُنتج CSV فارغة ثم abort بعد grace period.
+        # نفشل صراحةً مع تعليمات واضحة بدلاً من متابعة صامتة.
+        if self._actuator_msg_count == 0 and self.abort_on_no_actuator:
+            raise RuntimeError(
+                "[HIL] PX4 لم يُرسل أي HIL_ACTUATOR_CONTROLS خلال warm-up.\n"
+                "  الأسباب المحتملة:\n"
+                "    1) SYS_HITL=0 — ضَبطه يتطلب إعادة تشغيل PX4 بعد PARAM_SET.\n"
+                "       (شغّل الجلسة مرة، ستُحفظ SYS_HITL=1 في parameters.bson،\n"
+                "        ثم أعد التشغيل يدوياً من التطبيق وأعد تشغيل HIL.)\n"
+                "    2) simulator_mavlink لم يبدأ على 4560 (تحقق من dmesg/logcat).\n"
+                "    3) rocket_mpc لم يُنشر actuator_outputs_sim (تحقق من armed).\n"
+                "  لتعطيل هذا الفحص (غير مُوصى): hil.abort_on_no_actuator=false"
+            )
+
         print("[HIL] Starting flight loop (realtime)...")
         t_wall0 = time.monotonic()
         _t_off_us = self._sim_t_us + int(dt * 1e6)
@@ -957,17 +982,20 @@ class HILBridge:
                 not within_grace
                 and (not fb_ever_seen or fb_age_us >= abort_threshold_us)
             )
+            # تأجيل قرار الإيقاف إلى ما بعد _log ليظهر آخر صف في CSV
+            # مع fin_source="abort" (سهولة تشخيص ما قبل السقوط).
+            abort_reason: Optional[str] = None
             if fb_useable:
                 self._fins_rad = fb_rad
                 self._fin_source = "can"
             elif stale_beyond_abort:
-                # إيقاف محاكاة — فقدنا الفيدباك/العتاد خارج فترة السماح
                 print(f"\n[HIL] ABORT: servo feedback lost "
                       f"(age={fb_age_us/1000:.0f}ms, mask=0x"
                       f"{self._servo_online_mask:02X}). "
                       f"Stopping simulation at t={t:.3f}s.")
+                self._fins_rad = self._fin_can_rad.copy()
                 self._fin_source = "abort"
-                break
+                abort_reason = "feedback_lost"
             elif fb_ever_seen:
                 # تأخير ضمن window [timeout..abort]: احتفظ بآخر زاوية مقاسة
                 self._fins_rad = self._fin_can_rad.copy()
@@ -999,7 +1027,7 @@ class HILBridge:
                               f"{self._servo_safety_breach} consecutive steps "
                               f"at t={t:.3f}s")
                         self._fin_source = "abort"
-                        break
+                        abort_reason = "tracking_error"
                 else:
                     self._servo_safety_breach = 0
 
@@ -1039,6 +1067,9 @@ class HILBridge:
 
             self._drain_target(dt)
             self._log(snap, next_state, t_end, s)
+
+            if abort_reason is not None:
+                break
 
             if sim._detect_ground_impact(next_state, t_end):
                 print(f"\n[HIL] Ground impact at t={t_end:.3f}s")
@@ -1104,37 +1135,20 @@ class HILBridge:
     # ─── استقبال رسائل الهدف ────────────────────────────────────────────────
 
     def _drain_target(self, dt: float):
-        """قراءة ما توفّر من الهدف بلا حجب. يحدّث التحكّم وسجلّ التوقيت."""
+        """قراءة ما توفّر من الهدف بلا حجب. يحدّث التحكّم فقط.
+
+        simulator_mavlink (TCP 4560) يبثّ HIL_* + HIL_ACTUATOR_CONTROLS فقط.
+        SRV_FB وTIMING وPARAM_VALUE تأتي على MAVLink العادي (5760) ويعالجها
+        ``_timing_reader_loop`` — فروع تلك الرسائل هنا كانت dead code وتسبّب
+        ازدواج تسجيل محتمل (race مع خيط 5760).
+        """
         msgs = self._recv_nonblock()
-        got_timing = False
         for msg_id, payload in msgs:
             if msg_id == MSG_HIL_ACTUATOR_CONTROLS:
                 p = parse_actuator_controls(payload)
                 if p:
                     self._last_controls = np.array(p["controls"])
                     self._actuator_msg_count += 1
-            elif msg_id == MSG_DEBUG_FLOAT_ARRAY:
-                self._handle_debug_float_array(payload)
-            # ملاحظة: PARAM_VALUE لا يُبَث على simulator_mavlink TCP 4560.
-            # يُلتقط بدلاً من ذلك في _timing_reader_loop (قناة 5760).
-            elif self.timing_enabled and msg_id == MSG_NAMED_VALUE_FLOAT:
-                p = parse_named_value_float(payload)
-                if p and p["name"] in ("mhe_us", "mpc_us", "cycle_us"):
-                    self._last_timing[p["name"]] = p["value"]
-                    got_timing = True
-            elif self.timing_enabled and msg_id == MSG_DEBUG_VECT:
-                p = parse_debug_vect(payload)
-                # الاصطلاح: name="TIMING", x=mhe_us, y=mpc_us, z=cycle_us
-                if p and p["name"].upper().startswith("TIMING"):
-                    self._last_timing["mhe_us"] = p["x"]
-                    self._last_timing["mpc_us"] = p["y"]
-                    self._last_timing["cycle_us"] = p["z"]
-                    got_timing = True
-        if got_timing:
-            self.timing["t_sim"].append(self._sim_t_us / 1e6)
-            self.timing["mhe_us"].append(self._last_timing["mhe_us"])
-            self.timing["mpc_us"].append(self._last_timing["mpc_us"])
-            self.timing["cycle_us"].append(self._last_timing["cycle_us"])
 
     def _set_hitl_param(self, init_sensors: dict, dt: float) -> None:
         """تفعيل SYS_HITL=1 في PX4 عبر PARAM_SET.
@@ -1218,7 +1232,10 @@ class HILBridge:
                 self._zero_calib_active = True
                 self._zero_calib_samples.clear()
 
-            self._sim_t_us += 5000  # +5ms — يطابق time.sleep(0.005) wall-clock
+            # wall-clock موحّد عبر كل مراحل warm-up (auto-zero/param/warmup/flight).
+            # الزيادة الثابتة +5ms السابقة كانت تبدأ من 0 وتُحدث قفزة هائلة عند
+            # انتقال `_set_hitl_param`/warmup إلى wall-clock، ما قد يُربك EKF2.
+            self._sim_t_us = int(time.monotonic() * 1e6)
             self._send(build_heartbeat())
             self._send(build_hil_state_quat(
                 self._sim_t_us,
@@ -1250,8 +1267,19 @@ class HILBridge:
             self._servo_zero_offset_rad = np.zeros(4)
             return
 
-        arr = np.vstack(samples)  # shape (N, 4)
-        offset_deg = np.median(arr, axis=0)
+        # فلترة per-channel حسب online_mask: قناة offline لا تُحسب في medianها
+        # حتى لا تُلوّث بـ fb_deg_raw قديمة/صفرية.
+        arr = np.vstack([s[0] for s in samples])            # (N, 4)
+        masks = np.array([s[1] for s in samples], dtype=int)  # (N,)
+        offset_deg = np.zeros(4)
+        n_per_ch = np.zeros(4, dtype=int)
+        for ch in range(4):
+            sel = (masks & (1 << ch)) != 0
+            n_per_ch[ch] = int(sel.sum())
+            if n_per_ch[ch] >= 3:
+                offset_deg[ch] = float(np.median(arr[sel, ch]))
+            else:
+                offset_deg[ch] = 0.0  # غير كافي → trust hardware zero
 
         safe_mask = np.abs(offset_deg) <= self.servo_zero_max_deg
         if not np.all(safe_mask):
@@ -1262,11 +1290,17 @@ class HILBridge:
 
         self._servo_zero_offset_rad = np.radians(offset_deg)
 
-        spread_deg = float(np.max(arr.std(axis=0)))
+        per_ch_std = np.array([
+            float(arr[(masks & (1 << ch)) != 0, ch].std())
+            if n_per_ch[ch] >= 3 else 0.0
+            for ch in range(4)
+        ])
+        spread_deg = float(np.max(per_ch_std))
         print(f"[HIL] Servo zero-offset [deg] = "
               f"[{offset_deg[0]:+6.2f}, {offset_deg[1]:+6.2f}, "
               f"{offset_deg[2]:+6.2f}, {offset_deg[3]:+6.2f}]  "
-              f"(samples={len(samples)}, max_std={spread_deg:.3f}°)")
+              f"(samples={len(samples)}, n_per_ch={n_per_ch.tolist()}, "
+              f"max_std={spread_deg:.3f}°)")
 
     def _handle_debug_float_array(self, payload: bytes):
         """يعالج SRV_FB (array_id=1) من درايفر xqpower_can."""
@@ -1282,10 +1316,13 @@ class HILBridge:
         online_mask = int(data[12]) & 0xFF
         tx_fail = int(data[13])
 
-        # أثناء المعايرة: اجمع العيّنات الخام (قبل أي طرح offset)
+        # أثناء المعايرة: اجمع العيّنات الخام (قبل أي طرح offset) — مع قناع
+        # online_mask الحالي لاستبعاد القنوات offline لاحقاً per-channel.
         if self._zero_calib_active:
             with self._servo_fb_lock:
-                self._zero_calib_samples.append(fb_deg_raw.copy())
+                self._zero_calib_samples.append(
+                    (fb_deg_raw.copy(), online_mask & 0x0F)
+                )
                 self._servo_online_mask = online_mask
                 self._servo_tx_fail = tx_fail
             return
@@ -1344,7 +1381,7 @@ class HILBridge:
         n = len(self.flight["time"])
         if n == 0:
             return
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         pos = np.array(self.flight["pos"])
         vel = np.array(self.flight["vel"])
         q = np.array(self.flight["quat"])
@@ -1392,7 +1429,7 @@ class HILBridge:
 
     def _export_timing_csv(self, path: str):
         n = len(self.timing["t_sim"])
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as f:
             wr = csv.writer(f)
             wr.writerow(["t_sim", "mhe_us", "mpc_us", "cycle_us"])
@@ -1411,7 +1448,7 @@ class HILBridge:
     def _export_servo_csv(self, path: str):
         """يُصدّر سجلّ فيدباك السيرفو (SRV_FB) — جوهر حلقة HIL المغلقة."""
         n = len(self.servo_log["t_sim"])
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as f:
             wr = csv.writer(f)
             wr.writerow([
