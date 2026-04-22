@@ -3,7 +3,7 @@
 #include <cmath>
 
 struct LosConfig {
-	float target_x          = 3000.0f;
+	float target_x          = 2600.0f;
 	float target_h          = 0.0f;     // target_alt - launch_alt
 	float impact_angle_deg  = -30.0f;
 	float impact_blend_start = 0.93f;
