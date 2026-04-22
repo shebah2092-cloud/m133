@@ -587,12 +587,14 @@ class MpcController:
         solver.set(0, "ubx", x_mpc)
 
         # Weights — blended between altitude-hold and LOS guidance
-        # Tail-off zone: thrust drops rapidly ~1s before nominal burn_time.
-        # During this zone, reduce gamma tracking (no thrust to execute commands)
-        # and increase damping to suppress oscillations.
+        # Tail-off zone: thrust drops rapidly over `t_tail` seconds before
+        # nominal burn_time (see get_params() thrust curve, which uses the
+        # same window). During this zone, reduce gamma tracking (no thrust
+        # to execute commands) and increase damping to suppress oscillations.
+        # Post-burnout the window extends 2*t_tail to let weights settle.
         is_boost = (t < self.burn_time)
-        t_tailoff_start = self.burn_time - 1.0  # thrust starts dropping ~1s before burnout
-        t_tailoff_end = self.burn_time + 2.0     # allow 2s after burnout to settle
+        t_tailoff_start = self.burn_time - self._t_tail
+        t_tailoff_end = self.burn_time + 2.0 * self._t_tail
         in_tailoff = t_tailoff_start < t < t_tailoff_end
 
         if is_boost and not in_tailoff:

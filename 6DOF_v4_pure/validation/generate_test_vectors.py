@@ -110,11 +110,11 @@ def compute_los(x_pos, y_pos, altitude, target_x, target_h,
 
 
 def compute_weights(t, gamma, gamma_ref_prev, phi, alpha, q_rate, x_pos,
-                    burn_time, target_x, cruise_progress, cruise_alt_set,
+                    burn_time, t_tail, target_x, cruise_progress, cruise_alt_set,
                     cruise_alt_target, H_SCALE):
     is_boost = t < burn_time
-    t_tailoff_start = burn_time - 1.0
-    t_tailoff_end = burn_time + 2.0
+    t_tailoff_start = burn_time - t_tail
+    t_tailoff_end = burn_time + 2.0 * t_tail
     in_tailoff = t_tailoff_start < t < t_tailoff_end
 
     if is_boost and not in_tailoff:
@@ -249,7 +249,8 @@ def generate_test_cases():
         # Weights (pass gamma_ref_prev from LOS result — matches
         # autopilot which reads self._gamma_ref_prev after LOS update)
         W, W_e = compute_weights(t, gam, gamma_ref, phi, al, qr, xp,
-                                  cfg['burn_time'], cfg['target_x'],
+                                  cfg['burn_time'], cfg['t_tail'],
+                                  cfg['target_x'],
                                   cfg['cruise_progress'],
                                   t > cfg['burn_time'] + 1.0, alt,
                                   cfg['H_SCALE'])
