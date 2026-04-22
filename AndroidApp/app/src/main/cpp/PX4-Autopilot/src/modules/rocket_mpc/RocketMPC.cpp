@@ -381,6 +381,16 @@ void RocketMPC::_reset_flight_state()
 	_last_de = 0.0f; _last_dr = 0.0f; _last_da = 0.0f;
 	_last_mpc_solve_time = 0;
 
+	// Per-fin clamp telemetry is per-flight: clear so PX4_INFO reports
+	// only the current flight's activation rate and the ~500-solve
+	// cadence is not offset by counters left over from the previous
+	// flight. _reset_flight_state() runs on both arm→launch and
+	// disarm transitions.
+	memset(_fin_clamp_count, 0, sizeof(_fin_clamp_count));
+	_fin_clamp_any = 0;
+	_fin_clamp_solves = 0;
+	_fin_clamp_report_at = 0;
+
 	// MPC state & diagnostics snapshot
 	memset(_last_x_mpc, 0, sizeof(_last_x_mpc));
 	_have_x_mpc = false;
