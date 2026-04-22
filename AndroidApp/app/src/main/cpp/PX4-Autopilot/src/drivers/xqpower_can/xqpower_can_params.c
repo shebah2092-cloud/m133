@@ -87,3 +87,33 @@ PARAM_DEFINE_FLOAT(XQCAN_LIMIT, 20.0f);
  * @group XQPOWER CAN
  */
 PARAM_DEFINE_INT32(XQCAN_REV, 0);
+
+/**
+ * Servo PDO auto-report interval (ms)
+ *
+ * How often each XQPOWER servo auto-reports its measured position over
+ * CAN (PDO). Lower values give tighter timing data and tighter
+ * closed-loop HIL injection, at the cost of more CAN bus load and more
+ * USB-CH340 / PX4 parsing traffic.
+ *
+ * Guidance:
+ *   50 ms (default): historical/proven value. 4 servos × 20 Hz ≈ 2 %
+ *                    of a 500 kbps CAN bus.
+ *   10 ms:           fastest supported by the driver. 4 servos × 100 Hz
+ *                    ≈ 11 % bus load. Recommended for closed-loop HIL,
+ *                    and for real flight only after bench-validating
+ *                    that the bus and USB-CH340 adapter keep up with
+ *                    no dropped frames.
+ *
+ * The driver clamps values below 10 ms up to 10 ms. Applied during the
+ * servo init sequence; change XQCAN_FB_MS then restart the driver
+ * (`xqpower_can stop && xqpower_can start`) or reboot PX4 for the new
+ * interval to reach the servos.
+ *
+ * @min 10
+ * @max 250
+ * @unit ms
+ * @reboot_required true
+ * @group XQPOWER CAN
+ */
+PARAM_DEFINE_INT32(XQCAN_FB_MS, 50);
