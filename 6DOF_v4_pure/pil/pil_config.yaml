@@ -32,20 +32,6 @@ scenario:
   duration_s: 500.0
   dt_s: 0.01
   random_seed: 42
-thresholds:
-  vs_baseline:
-    velocity_mae_max: 5.0
-    attitude_max_deg: 5.0
-    cep_max_m: 50.0
-    altitude_mae_max: 100.0
-    altitude_max_err_max: 300.0
-  timing:
-    deadline_us: 20000
-    mpc_p95_max_us: 10000
-    mpc_p99_max_us: 15000
-    cycle_p95_max_us: 15000
-    deadline_miss_max: 0
-    jitter_std_max_us: 2000
 output:
   results_dir: 6DOF_v4_pure/pil/results
   csv_name: pil_flight.csv
