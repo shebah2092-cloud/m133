@@ -26,6 +26,10 @@ set ROCKET_APP rocket_mpc
 # HIL mode — all sensor data comes from 6DOF sim via USB serial
 param set SYS_HITL 1
 
+# MHE must read sensor_gps fed via HIL_GPS, not EKF2 lpos.  Force 0 even if a
+# previous SITL session left ROCKET_SITL_GPS=1 in saved parameters.
+param set ROCKET_SITL_GPS 0
+
 # ---- Rocket MPC parameters ----
 # Target X (downrange, m) uses ROCKET_XTRGT default from rocket_mpc_params.c.
 param set ROCKET_T_CTRL      0.2

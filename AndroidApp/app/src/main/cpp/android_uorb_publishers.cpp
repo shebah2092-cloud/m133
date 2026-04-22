@@ -5,6 +5,7 @@
  */
 #include "android_uorb_publishers.h"
 #include "shared_sensor_data.h"
+#include <parameters/param.h>
 
 #include <uORB/Publication.hpp>
 #include <uORB/Subscription.hpp>
@@ -259,6 +260,19 @@ int get_airframe_id() {
     param_t p = param_find("SYS_AUTOSTART");
     if (p != PARAM_INVALID) { param_get(p, &val); }
     return val;
+}
+
+// Change SYS_AUTOSTART from Kotlin UI.  Caller is responsible for restarting
+// PX4 modules (via stopPX4 + startPX4) so the new airframe defaults are applied
+// by the boot-time logic in px4_jni.cpp.
+bool set_airframe_id(int id) {
+    param_t p = param_find("SYS_AUTOSTART");
+    if (p == PARAM_INVALID) { return false; }
+    int32_t val = (int32_t)id;
+    if (param_set(p, &val) != 0) { return false; }
+    // Persist to parameter storage so the value survives the restart.
+    param_save_default(true);
+    return true;
 }
 
 // Board stubs for Android (مطلوبة من commander)

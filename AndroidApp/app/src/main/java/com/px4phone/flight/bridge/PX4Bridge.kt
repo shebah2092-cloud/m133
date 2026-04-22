@@ -22,6 +22,7 @@ object PX4Bridge {
     external fun isArmed(): Boolean
     external fun getEKFStatus(): Int
     external fun getAirframeId(): Int
+    external fun setAirframeId(id: Int): Boolean
 
     // USB Servo output (Phase 11.2)
     external fun setServoUsbFd(fd: Int)

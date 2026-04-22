@@ -175,14 +175,15 @@ static void start_px4_modules(const std::string& storage_path) {
         // أول تشغيل: SYS_AUTOSTART لم يُضبط بعد (يساوي 0)
         const bool first_rocket_run = (current_autostart == 0);
 
-        // SYS_AUTOSTART: يُضبط على 22001 فقط في أول تشغيل (HITL/PIL default)
-        // بعدها يحترم القيمة المحفوظة (22000/22001/22002)
+        // SYS_AUTOSTART: default 22004 (HITL) on first run.
+        // Actual airframes: 22003 (SITL-posix), 22004 (HITL), 22005 (Real).
+        // 22001/22002 kept as legacy aliases for HITL/Real respectively.
         if (p != PARAM_INVALID) {
             if (first_rocket_run) {
-                int32_t val = 22001;
+                int32_t val = 22004;
                 param_set(p, &val);
-                current_autostart = 22001;
-                LOGI("SYS_AUTOSTART = 22001 — FIRST ROCKET RUN (HITL/PIL), applying all airframe defaults");
+                current_autostart = 22004;
+                LOGI("SYS_AUTOSTART = 22004 — FIRST ROCKET RUN (HITL), applying all airframe defaults");
             } else {
                 LOGI("SYS_AUTOSTART = %d — params preserved from previous session", current_autostart);
             }
@@ -190,10 +191,13 @@ static void start_px4_modules(const std::string& storage_path) {
             LOGE("SYS_AUTOSTART param not found!");
         }
 
-        // ===== ضبط SYS_HITL تلقائياً حسب الـ airframe =====
+        // ===== SYS_HITL auto-selection by airframe =====
+        //   22001 / 22004 -> HITL  (external simulator via MAVLink HIL)
+        //   22002 / 22005 -> Real flight (real sensors / hardware)
+        //   otherwise     -> SITL
         int32_t sys_hitl = 0;
         {
-            int32_t hitl_val = (current_autostart == 22001) ? 1 : 0;
+            int32_t hitl_val = (current_autostart == 22001 || current_autostart == 22004) ? 1 : 0;
             sys_hitl = hitl_val;
             p = param_find("SYS_HITL");
             if (p != PARAM_INVALID) {
@@ -437,10 +441,13 @@ static void start_px4_modules(const std::string& storage_path) {
             }
 
             // ============================================================
-            // معاملات خاصة بالـ airframe (تختلف بين 22000/22001/22002)
+            // Airframe-specific defaults.
+            //   Real flight  : 22002 (legacy) / 22005
+            //   HITL         : 22001 (legacy) / 22004
+            //   SITL/Android : otherwise (incl. 22000 / 22003)
             // ============================================================
-            if (current_autostart == 22002) {
-                // === 22002: طيران حقيقي — حساسات الهاتف ===
+            if (current_autostart == 22002 || current_autostart == 22005) {
+                // === Real flight: real onboard sensors ===
                 p = param_find("SENS_EN_GPSSIM");
                 if (p != PARAM_INVALID) { int32_t v = 0; param_set(p, &v); }
                 p = param_find("SENS_EN_BAROSIM");
@@ -459,52 +466,61 @@ static void start_px4_modules(const std::string& storage_path) {
                 if (p != PARAM_INVALID) { float v = 0.0f; param_set(p, &v); }
                 p = param_find("COM_ARM_EKF_HGT");
                 if (p != PARAM_INVALID) { float v = 0.0f; param_set(p, &v); }
-                // XqpowerCan — تفعيل محرك CAN مع حدود التيار
+                // MHE must read the real sensor_gps, not EKF2 lpos.  Force this even if
+                // a previous SITL session had saved ROCKET_SITL_GPS=1.
+                p = param_find("ROCKET_SITL_GPS");
+                if (p != PARAM_INVALID) { int32_t v = 0; param_set(p, &v); }
+                // XqpowerCan â CAN servo driver with current limit
                 p = param_find("XQCAN_ENABLE");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
                 p = param_find("XQCAN_LIMIT");
-                if (p != PARAM_INVALID) { float v = 25.0f; param_set(p, &v); }
+                if (p != PARAM_INVALID) { float v = 20.0f; param_set(p, &v); }
                 p = param_find("XQCAN_REV");
                 if (p != PARAM_INVALID) { int32_t v = 0; param_set(p, &v); }
-                // Battery — عدد الخلايا ومقسم الجهد
+                // Battery â cell count and voltage divider
                 p = param_find("BAT1_N_CELLS");
                 if (p != PARAM_INVALID) { int32_t v = 6; param_set(p, &v); }
                 p = param_find("BAT1_V_DIV");
                 if (p != PARAM_INVALID) { float v = 74.74f; param_set(p, &v); }
-                LOGI("Airframe 22002 (Real Flight) defaults applied");
+                LOGI("Airframe %d (Real flight) defaults applied", current_autostart);
 
-            } else if (current_autostart == 22001) {
-                // === 22001: HITL — محاكي خارجي ===
+            } else if (current_autostart == 22001 || current_autostart == 22004) {
+                // === HITL: external simulator over MAVLink HIL ===
                 p = param_find("EKF2_MAG_TYPE");
                 if (p != PARAM_INVALID) { int32_t v = 5; param_set(p, &v); }
-                // Simulated sensors — ضروري لـ HITL لاستقبال بيانات المحاكي
+                // Simulated sensors required to receive HIL streams
                 p = param_find("SENS_EN_GPSSIM");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
                 p = param_find("SENS_EN_BAROSIM");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
                 p = param_find("SENS_EN_MAGSIM");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
-                // XqpowerCan — تفعيل محرك CAN
+                // HIL feeds sensor_gps directly via HIL_GPS; MHE must read that, not EKF2 lpos.
+                p = param_find("ROCKET_SITL_GPS");
+                if (p != PARAM_INVALID) { int32_t v = 0; param_set(p, &v); }
+                // XqpowerCan â CAN servo driver
                 p = param_find("XQCAN_ENABLE");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
                 p = param_find("XQCAN_LIMIT");
-                if (p != PARAM_INVALID) { float v = 25.0f; param_set(p, &v); }
+                if (p != PARAM_INVALID) { float v = 20.0f; param_set(p, &v); }
                 p = param_find("XQCAN_REV");
                 if (p != PARAM_INVALID) { int32_t v = 0; param_set(p, &v); }
-                LOGI("Airframe 22001 (HITL) defaults applied");
+                LOGI("Airframe %d (HITL) defaults applied", current_autostart);
 
             } else {
-                // === 22000: SITL/Android — حساسات الهاتف ===
+                // === SITL/Android: simulated sensors from phone stack ===
                 p = param_find("EKF2_MAG_TYPE");
                 if (p != PARAM_INVALID) { int32_t v = 5; param_set(p, &v); }
-                // Simulated sensors — ضروري لـ SITL
                 p = param_find("SENS_EN_GPSSIM");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
                 p = param_find("SENS_EN_BAROSIM");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
                 p = param_find("SENS_EN_MAGSIM");
                 if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
-                LOGI("Airframe 22000 (SITL/Phone) defaults applied");
+                // SITL: use EKF2 lpos as GPS substitute for MHE (matches 22003).
+                p = param_find("ROCKET_SITL_GPS");
+                if (p != PARAM_INVALID) { int32_t v = 1; param_set(p, &v); }
+                LOGI("Airframe %d (SITL/Phone) defaults applied", current_autostart);
             }
 
             LOGI("All rocket airframe defaults applied (M130 / rc.rocket_defaults + airframe-specific)");
@@ -635,13 +651,25 @@ static void start_px4_modules(const std::string& storage_path) {
     rocket_mpc_main(2, (char**)rmpc_argv);
     LOGI("Rocket MPC started");
 
-    // 10c. XQPOWER CAN servo driver (physical servos via Waveshare USB_CAN_A)
-    // USB FD may not be available yet — driver will connect when USB is plugged in
+    // 10c. XQPOWER CAN servo driver (physical servos via Waveshare USB_CAN_A).
+    // USB FD may not be available yet -- driver connects when USB is plugged in.
+    //
+    // IMPORTANT: xqpower_can (below) and servo_usb_output (below) BOTH consume
+    //   actuator_outputs_sim / actuator_servos and BOTH emit XQPOWER servo
+    //   commands.  They must stay mutually exclusive at runtime: each driver is
+    //   expected to self-disable its output stage when its own transport
+    //   (USB-CAN adapter for xqpower_can; USB CP210x for servo_usb_output) is
+    //   not connected.  We start both unconditionally so whichever hardware is
+    //   plugged in wins.  If you ever find BOTH transports connected at the same
+    //   time to the same rocket, add an explicit exclusion (param or bridge
+    //   flag) — double-actuating the servos over two links will cause
+    //   controller fight.
     const char* xqcan_argv[] = {"xqpower_can", "start", nullptr};
     xqpower_can_main(2, (char**)xqcan_argv);
     LOGI("XQPOWER CAN servo driver started");
 
-    // 10d. Servo USB output (reads actuator_servos → sends XQPOWER via USB)
+    // 10d. Servo USB output (reads actuator_servos -> sends XQPOWER via USB).
+    // See guard comment on 10c above: mutually exclusive with xqpower_can.
     servo_usb_output_start();
     LOGI("Servo USB output started");
 
@@ -848,6 +876,11 @@ Java_com_ardophone_px4v17_bridge_PX4Bridge_getEKFStatus(JNIEnv*, jobject) {
 extern "C" JNIEXPORT jint JNICALL
 Java_com_ardophone_px4v17_bridge_PX4Bridge_getAirframeId(JNIEnv*, jobject) {
     return get_airframe_id();
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_ardophone_px4v17_bridge_PX4Bridge_setAirframeId(JNIEnv*, jobject, jint id) {
+    return set_airframe_id((int)id) ? JNI_TRUE : JNI_FALSE;
 }
 
 // ===== USB Servo Output (Phase 11.2) =====

@@ -164,6 +164,20 @@ private:
 	// Tracked actual fin deflections (first-order lag filter)
 	float _de_act{0.0f}, _dr_act{0.0f}, _da_act{0.0f};
 
+	// Latest full MPC state vector (x0 passed to the acados solver).  Cached so
+	// rocket_gnc_status can publish x_mpc[18] on every cycle, including ticks
+	// that reuse the previous fin command without re-solving.
+	float _last_x_mpc[18] {};
+	bool  _have_x_mpc{false};
+
+	// Latest MPC solver diagnostics
+	int      _last_mpc_status{-1};
+	uint32_t _last_mpc_sqp_iter{0};
+
+	// Latest MHE diagnostics
+	int   _last_mhe_status{-1};
+	bool  _last_mhe_valid{false};
+
 	// MHE-derived state cache (for logging & publish)
 	bool  _mhe_publishing{false};
 	float _mhe_phi{0.0f}, _mhe_theta{0.0f}, _mhe_psi{0.0f};

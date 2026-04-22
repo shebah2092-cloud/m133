@@ -310,11 +310,20 @@ static void servo_output_loop() {
                 }
 
                 // Priority 2: RocketGNC direct output (actuator_outputs_sim)
+                //
+                // rocket_mpc publishes fin deflections in RADIANS on this topic
+                // (see RocketMPC.cpp sim_path branch).  Multiplying by
+                // MAX_ANGLE_DEG here would interpret them as normalized [-1,+1]
+                // and produce only ~43% of the intended deflection
+                // (SOLVER_DELTA_MAX_RAD ~= 0.349 rad, 0.349 * 25 = 8.73 deg
+                // vs the expected 20 deg).  Convert rad -> deg instead, matching
+                // the HIL branch of the XqpowerCan driver.
                 if (!has_data) {
                     actuator_outputs_s sim_out{};
                     if (sim_out_sub.update(&sim_out)) {
+                        constexpr float RAD2DEG = 180.0f / (float)M_PI;
                         for (int i = 0; i < 4; i++) {
-                            fin_angles[i] = sim_out.output[i] * MAX_ANGLE_DEG;
+                            fin_angles[i] = sim_out.output[i] * RAD2DEG;
                         }
                         has_data = true;
                     }
