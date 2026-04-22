@@ -137,8 +137,6 @@ RocketMPC::~RocketMPC()
 
 bool RocketMPC::init()
 {
-	_sensor.set_launch_alt(_param_launch_alt.get());
-
 	// HITL mode: switch to groundtruth topics
 	int32_t hitl_val = 0;
 	param_get(param_find("SYS_HITL"), &hitl_val);
@@ -165,7 +163,6 @@ bool RocketMPC::init()
 	const float target_x       = _param_xtrgt.get();
 	const float target_h       = _param_htrgt.get();
 	const float impact_ang_deg = _param_imp_ang.get();
-	const float launch_pitch   = _param_launch_pitch.get();
 
 	// Derive plateau thrust from propulsion params (impulse / (t_burn - 0.75·t_tail))
 	// to stay consistent with the Python reference. ROCKET_THRUST is treated as
@@ -202,7 +199,10 @@ bool RocketMPC::init()
 	mpc_cfg.Izz_full = _param_izz_f.get(); mpc_cfg.Izz_dry = _param_izz_d.get();
 	mpc_cfg.tau_servo       = tau_servo;
 	mpc_cfg.impact_angle_deg = impact_ang_deg;
-	mpc_cfg.gamma_natural_rad = compute_gamma_natural(impulse, burn_time, launch_pitch, mass_full);
+	// gamma_natural_rad is derived at arm time from the measured launch pitch
+	// (see Run() arming block).  The init-time value is only consumed as a seed
+	// for `_los.configure(...)` below and is overwritten before launch.
+	mpc_cfg.gamma_natural_rad = 0.0f;
 	mpc_cfg.cruise_progress  = _param_cruise_p.get();
 	mpc_cfg.quality_gate_thr = _param_mhe_qg.get();
 
@@ -278,12 +278,10 @@ void RocketMPC::parameters_update(bool force)
 		mcfg.cruise_progress = _param_cruise_p.get();
 		_los.set_cruise_progress(mcfg.cruise_progress);
 
-		// Recompute gamma_natural from current propulsion/launch params so
-		// LOS feedforward and MPC config stay consistent with the param set.
-		const float gamma_natural = compute_gamma_natural(
-						    _param_impulse.get(), _param_burn_time.get(),
-						    _param_launch_pitch.get(), _param_mass_full.get());
-		mcfg.gamma_natural_rad = gamma_natural;
+		// gamma_natural_rad is NOT updated from params here: it is
+		// derived from the measured launch pitch at arming (see Run()).
+		// Param changes to propulsion/mass will still take effect on the
+		// next arming cycle through the same arm-time recompute.
 		mcfg.burn_time         = _param_burn_time.get();
 		mcfg.t_tail            = _param_t_tail.get();
 		mcfg.mass_full         = _param_mass_full.get();
@@ -302,10 +300,8 @@ void RocketMPC::parameters_update(bool force)
 
 		_los.configure_target(_param_xtrgt.get(), _param_htrgt.get(),
 				      _param_imp_ang.get());
-		_los.set_gamma_natural(gamma_natural);
 		_los.set_burn_time(_param_burn_time.get());
 
-		_sensor.set_launch_alt(_param_launch_alt.get());
 		_target_downrange = _param_xtrgt.get();
 	}
 }
@@ -332,6 +328,21 @@ float RocketMPC::_bearing_from_quat(const Quatf &q, float fallback)
 	}
 
 	return atan2f(bx_e, bx_n);
+}
+
+float RocketMPC::_pitch_from_quat(const Quatf &q)
+{
+	// Elevation of body-X above the NED horizontal plane, computed directly
+	// from the DCM column instead of Eulerf::theta() to stay numerically
+	// stable at pitch ≈ ±90° (gimbal-lock regime, which for a near-vertical
+	// rocket is exactly where we operate).  NED z points down, so the
+	// upward tilt angle is atan2(-bx_d, |bx_horizontal|).
+	const Dcmf R(q);
+	const float bx_n = R(0, 0);
+	const float bx_e = R(1, 0);
+	const float bx_d = R(2, 0);
+	const float bx_h = sqrtf(bx_n * bx_n + bx_e * bx_e);
+	return atan2f(-bx_d, bx_h);
 }
 
 void RocketMPC::_reset_flight_state()
@@ -379,6 +390,12 @@ void RocketMPC::_reset_flight_state()
 
 	// Baro staleness warning (allow re-warn on next flight)
 	_baro_stale_warned = false;
+
+	// NOTE: _launch_alt_captured / _launch_pitch_captured are reset in
+	// the arming block (before the sensor-based capture runs), NOT here.
+	// _reset_flight_state() fires AFTER capture at arm time, so clearing
+	// them here would wipe a freshly captured value and force MHE / LOS
+	// to sit without a launch reference for the first few ms of flight.
 }
 
 void RocketMPC::Run()
@@ -534,12 +551,16 @@ void RocketMPC::Run()
 			PX4_ERR("NO POSITION FIX at arming");
 		}
 
-		// Reset launch-altitude capture BEFORE the conditional GPS/lpos branches
-		// below. If no GPS fix is available at arm, these must NOT carry over from
-		// a previous flight — otherwise MHE's baro reference (mhe_p[8]) would use a
-		// stale MSL altitude until a fresh GPS fix arrives.
-		_launch_alt_captured   = false;
-		_actual_launch_alt_msl = 0.0f;
+		// Reset sensor-captured launch state BEFORE the conditional GPS/lpos
+		// branches below. If no GPS fix / attitude sample is available at arm,
+		// these must NOT carry over from a previous flight — otherwise MHE's
+		// baro reference (mhe_p[8]) would use a stale MSL altitude, and LOS's
+		// gamma_natural would reflect the previous rail angle, until a fresh
+		// capture occurs.
+		_launch_alt_captured    = false;
+		_actual_launch_alt_msl  = 0.0f;
+		_launch_pitch_captured  = false;
+		_actual_launch_pitch_rad = 0.0f;
 
 		_arm_origin_x = lpos.x;
 		_arm_origin_y = lpos.y;
@@ -586,20 +607,38 @@ void RocketMPC::Run()
 			}
 		}
 
-		// Bearing from heading at arming.
-		// Derive bearing from the body-X axis projected onto the NED
-		// horizontal plane — Eulerf::psi() goes unstable as pitch → 90°
-		// (gimbal lock), which for a near-vertical rocket is exactly the
-		// operating regime we need to get right.
+		// Bearing and launch pitch from attitude at arming.
+		// Both are derived from the body-X axis expressed in NED so they
+		// stay numerically stable at pitch → ±90° (gimbal lock), which for
+		// a near-vertical rocket is exactly the operating regime we need
+		// to get right.  The launch pitch replaces the old ROCKET_L_PITCH
+		// parameter: whatever the rail angle actually is at arming, that
+		// is what feeds gamma_natural — no operator bookkeeping required.
 		const Quatf q_arm(att.q[0], att.q[1], att.q[2], att.q[3]);
 		const float bearing = _bearing_from_quat(q_arm, /*fallback=*/0.0f);
+		const float launch_pitch_rad = _pitch_from_quat(q_arm);
+		_actual_launch_pitch_rad = launch_pitch_rad;
+		_launch_pitch_captured   = true;
 		_target_downrange = _param_xtrgt.get();
 		_cos_bearing = cosf(bearing);
 		_sin_bearing = sinf(bearing);
 
-		PX4_INFO("rocket_mpc: armed — origin=(%.2f,%.2f,%.2f) heading=%.1f°  range=%.0fm",
+		// Recompute gamma_natural from the measured launch pitch and push
+		// it to LOS so the feedforward ascent reference matches the real
+		// rail inclination.  Done at arm (not launch) to match the bearing
+		// capture and to keep LOS initialised before launch detection runs.
+		const float launch_pitch_deg = launch_pitch_rad * 180.0f / (float)M_PI;
+		const float gamma_natural = compute_gamma_natural(
+						    _param_impulse.get(), _param_burn_time.get(),
+						    launch_pitch_deg, _param_mass_full.get());
+		_los.set_gamma_natural(gamma_natural);
+		_mpc.mutable_config().gamma_natural_rad = gamma_natural;
+
+		PX4_INFO("rocket_mpc: armed — origin=(%.2f,%.2f,%.2f) heading=%.1f°  pitch=%.1f°  range=%.0fm",
 			 (double)_arm_origin_x, (double)_arm_origin_y, (double)_arm_origin_z,
-			 (double)(bearing * 180.0f / M_PI_F), (double)_target_downrange);
+			 (double)(bearing * 180.0f / M_PI_F),
+			 (double)launch_pitch_deg,
+			 (double)_target_downrange);
 
 		// Reset all in-flight state (flags, actuator caches, solvers,
 		// MHE telemetry, xval). Centralised to keep arm / disarm in
@@ -668,6 +707,20 @@ void RocketMPC::Run()
 			const float bearing = _bearing_from_quat(q_pre, /*fallback=*/atan2f(_sin_bearing, _cos_bearing));
 			_cos_bearing = cosf(bearing);
 			_sin_bearing = sinf(bearing);
+
+			// Track launch pitch pre-launch too: the rocket can shift on
+			// the rail after arming (handling, wind, thermal drift), and
+			// the last sample before launch detection is the best estimate
+			// of the rail inclination at ignition.
+			const float launch_pitch_rad = _pitch_from_quat(q_pre);
+			_actual_launch_pitch_rad = launch_pitch_rad;
+			_launch_pitch_captured   = true;
+			const float gamma_natural = compute_gamma_natural(
+							    _param_impulse.get(), _param_burn_time.get(),
+							    launch_pitch_rad * 180.0f / (float)M_PI,
+							    _param_mass_full.get());
+			_los.set_gamma_natural(gamma_natural);
+			_mpc.mutable_config().gamma_natural_rad = gamma_natural;
 		}
 	}
 

@@ -1320,8 +1320,6 @@ enum class params : uint16_t {
 	ROCKET_IYY_F,
 	ROCKET_IZZ_D,
 	ROCKET_IZZ_F,
-	ROCKET_L_ALT,
-	ROCKET_L_PITCH,
 	ROCKET_MASS_D,
 	ROCKET_MASS_F,
 	ROCKET_MHE_QG,
@@ -8506,16 +8504,6 @@ static constexpr param_info_s parameters[] = {
 	},
 
 	{
-		.name = "ROCKET_L_ALT",
-		.val = { .f = 1200.0 },
-	},
-
-	{
-		.name = "ROCKET_L_PITCH",
-		.val = { .f = 15.0 },
-	},
-
-	{
 		.name = "ROCKET_MASS_D",
 		.val = { .f = 11.11 },
 	},
@@ -13041,8 +13029,6 @@ static constexpr param_type_t parameters_type[] = {
 	PARAM_TYPE_FLOAT, // ROCKET_IYY_F
 	PARAM_TYPE_FLOAT, // ROCKET_IZZ_D
 	PARAM_TYPE_FLOAT, // ROCKET_IZZ_F
-	PARAM_TYPE_FLOAT, // ROCKET_L_ALT
-	PARAM_TYPE_FLOAT, // ROCKET_L_PITCH
 	PARAM_TYPE_FLOAT, // ROCKET_MASS_D
 	PARAM_TYPE_FLOAT, // ROCKET_MASS_F
 	PARAM_TYPE_FLOAT, // ROCKET_MHE_QG
