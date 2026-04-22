@@ -1,7 +1,7 @@
 {
     "code_gen_opts": {
-        "acados_include_path": "/home/yoga/m13/acados-main/include",
-        "acados_lib_path": "/home/yoga/m13/acados-main/lib",
+        "acados_include_path": "/home/ubuntu/repos/m13/acados-main/include",
+        "acados_lib_path": "/home/ubuntu/repos/m13/acados-main/lib",
         "acados_link_libs": {
             "clarabel": "",
             "daqp": "",
@@ -13,10 +13,10 @@
             "qpoases": ""
         },
         "acados_version": "unknown",
-        "code_export_directory": "/home/yoga/m13/6DOF_v4_pure/mpc/c_generated_code",
+        "code_export_directory": "/home/ubuntu/repos/m13/6DOF_v4_pure/mpc/c_generated_code",
         "cython_include_dirs": [
-            "/home/yoga/.local/lib/python3.10/site-packages/numpy/_core/include",
-            "/usr/include/python3.10"
+            "/home/ubuntu/.pyenv/versions/3.12.8/lib/python3.12/site-packages/numpy/_core/include",
+            "/home/ubuntu/.pyenv/versions/3.12.8/include/python3.12"
         ],
         "json_file": "m130_mhe_ocp.json",
         "os": "unix",
@@ -3591,7 +3591,7 @@
         "zu_e": []
     },
     "dims": {
-        "N": 25,
+        "N": 20,
         "n_global_data": 0,
         "nbu": 17,
         "nbx": 11,
@@ -3650,7 +3650,7 @@
         "m130_mhe_cost/m130_mhe_cost_y_fun_jac_ut_xt.c",
         "m130_mhe_cost/m130_mhe_cost_y_hess.c"
     ],
-    "hash": "f3cc71dbf352b495b982800588e9c2fe",
+    "hash": "0d60c8889413e83f7e5feafe380b80aa",
     "model": {
         "con_h_expr": [],
         "con_h_expr_0": [],
@@ -3768,10 +3768,10 @@
         0.0,
         0.0,
         12.74,
-        600.0,
-        0.0373,
-        1.122,
-        1.122,
+        893.5,
+        0.0389,
+        1.1651,
+        1.166,
         1200.0
     ],
     "problem_class": "OCP",
@@ -3792,11 +3792,6 @@
         "collocation_type": "GAUSS_LEGENDRE",
         "cost_discretization": "EULER",
         "cost_scaling": [
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
             1.0,
             1.0,
             1.0,
@@ -3876,7 +3871,7 @@
         "nlp_solver_warm_start_first_qp_from_nlp": false,
         "print_level": 0,
         "qp_solver": "PARTIAL_CONDENSING_HPIPM",
-        "qp_solver_cond_N": 25,
+        "qp_solver_cond_N": 20,
         "qp_solver_cond_block_size": null,
         "qp_solver_cond_ric_alg": 1,
         "qp_solver_iter_max": 100,
@@ -3922,19 +3917,9 @@
             0.34,
             0.36000000000000004,
             0.38000000000000006,
-            0.4000000000000001,
-            0.4200000000000001,
-            0.4400000000000001,
-            0.46000000000000013,
-            0.48000000000000015,
-            0.5000000000000001
+            0.4000000000000001
         ],
         "sim_method_jac_reuse": [
-            0,
-            0,
-            0,
-            0,
-            0,
             0,
             0,
             0,
@@ -3978,19 +3963,9 @@
             4,
             4,
             4,
-            4,
-            4,
-            4,
-            4,
-            4,
             4
         ],
         "sim_method_num_steps": [
-            1,
-            1,
-            1,
-            1,
-            1,
             1,
             1,
             1,
@@ -4015,13 +3990,8 @@
         "solution_sens_qp_t_lam_min": 1e-09,
         "store_iterates": false,
         "tau_min": 0.0,
-        "tf": 0.5,
+        "tf": 0.4,
         "time_steps": [
-            0.02,
-            0.02,
-            0.02,
-            0.02,
-            0.02,
             0.02,
             0.02,
             0.02,

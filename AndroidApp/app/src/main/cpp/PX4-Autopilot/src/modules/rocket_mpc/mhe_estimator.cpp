@@ -192,6 +192,12 @@ void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS])
 		float dt_actual = t - _meas_buf[last_idx].t;
 
 		if (dt_actual > 3.0f * _cfg.horizon_dt) {
+			// Snapshot validity BEFORE clearing it — the reseed block
+			// below needs to know whether _last_valid.x_hat was
+			// populated by a successful solve. Checking _last_valid.valid
+			// after `_last_valid.valid = false` always reads false.
+			const bool had_valid_estimate = _last_valid.valid;
+
 			_meas_count   = 0;
 			_meas_head    = 0;
 			_param_count  = 0;
@@ -200,6 +206,28 @@ void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS])
 			_last_valid.quality = 0.0f;
 			_consec_fails = 0;
 			_last_solve_t = -1.0f;
+
+			// Re-seed the arrival cost mean.  Without this, the first solve
+			// after the gap anchors the NEW window to the pre-gap arrival
+			// state via P0 — up to hundreds of metres / tens of degrees of
+			// stale bias depending on how long the gap lasted.  The
+			// cross-validation / startup ramp gates will still suppress the
+			// output until the solver re-converges, but the optimiser burns
+			// several cycles fighting a phantom arrival target.
+			//
+			// Best available seed is the last valid estimate (the state we
+			// had just before losing measurements).  If we never had one,
+			// fall back to zero — the measurement likelihood alone will
+			// dominate once `min_init_meas` samples accumulate.
+			if (had_valid_estimate) {
+				memcpy(_x_bar, _last_valid.x_hat, MHE_NX * sizeof(double));
+			} else {
+				memset(_x_bar, 0, sizeof(_x_bar));
+			}
+
+			// Re-engage the startup ramp so mhe_authority cannot fire on
+			// the first solve after the gap, matching reinit_state().
+			_solve_count = 0;
 		}
 	}
 
@@ -392,6 +420,35 @@ MheOutput MheEstimator::update(float t)
 		if (_consec_fails >= _cfg.max_consec_fails) {
 			PX4_ERR("MHE frozen: too many consecutive failures");
 			return _frozen_output();
+		}
+
+		// Mid-streak recovery: once consecutive failures pass half the
+		// hard limit, re-seed the arrival cost from the last valid
+		// estimate (the NaN x_hat from this solve is unusable) and
+		// re-engage the startup ramp.  Without this the optimiser keeps
+		// linearising around the same bad x_bar every cycle and the NaN
+		// streak can ride all the way to max_consec_fails, freezing MHE
+		// for the rest of the flight.
+		const int reseed_threshold = _cfg.max_consec_fails / 2;
+
+		if (reseed_threshold > 0 && _consec_fails == reseed_threshold) {
+			if (_last_valid.valid) {
+				memcpy(_x_bar, _last_valid.x_hat, MHE_NX * sizeof(double));
+				// Re-warm-start all solver nodes from the last good
+				// estimate so SQP linearises from a finite point
+				// instead of whatever junk the NaN solve left behind.
+				for (int k = 0; k <= _cfg.horizon_steps; k++) {
+					ocp_nlp_out_set(_nlp_config, _nlp_dims, _nlp_out,
+							_nlp_in, k, "x", (void *)_x_bar);
+				}
+				double u_zero[MHE_NU] = {};
+				for (int k = 0; k < _cfg.horizon_steps; k++) {
+					ocp_nlp_out_set(_nlp_config, _nlp_dims, _nlp_out,
+							_nlp_in, k, "u", u_zero);
+				}
+			}
+			_solve_count = 0;
+			PX4_WARN("MHE mid-streak reseed at fail #%d", _consec_fails);
 		}
 
 		// Progressive quality decay on consecutive failures.
