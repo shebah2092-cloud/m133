@@ -43,6 +43,21 @@ public:
 		_gps_origin_set = true;
 	}
 
+	/** Set the NED origin (arm position in EKF2 lpos frame) used by
+	 *  update_from_lpos() to produce arm-relative measurements.  This keeps
+	 *  the MHE position state in the same frame as RocketMPC's Xm/Ym/Zm
+	 *  (which always subtract _arm_origin_*), so that the EKF↔MHE cooperative
+	 *  blend and XVAL reset do not inject a constant (_arm_origin) offset
+	 *  when the EKF2 origin differs from the arm position. Must be called
+	 *  before update_from_lpos() whenever _arm_origin_* is captured/updated. */
+	void set_ned_origin(float ned_x, float ned_y, float ned_z)
+	{
+		_ned_origin_x = ned_x;
+		_ned_origin_y = ned_y;
+		_ned_origin_z = ned_z;
+		_ned_origin_set = true;
+	}
+
 	/** Feed raw GPS reading — converts to local NED internally */
 	void update_gps(const sensor_gps_s &gps);
 
@@ -88,6 +103,16 @@ private:
 	double _ref_alt_msl{0.0};
 	double _ref_cos_lat{1.0};
 	bool   _gps_origin_set{false};
+
+	// NED origin (arm position in EKF2 lpos frame). Used by update_from_lpos
+	// to subtract the arm-time offset so HITL/SITL MHE measurements share a
+	// frame with RocketMPC's Xm/Ym/Zm. Initialised to (0,0,0) so pre-arm calls
+	// to update_from_lpos() pre-set-ned behave as if EKF2 origin is the
+	// reference — same as the previous behaviour.
+	float _ned_origin_x{0.0f};
+	float _ned_origin_y{0.0f};
+	float _ned_origin_z{0.0f};
+	bool  _ned_origin_set{false};
 
 	// Last GPS reading converted to local NED
 	double _gps_north{0.0};
