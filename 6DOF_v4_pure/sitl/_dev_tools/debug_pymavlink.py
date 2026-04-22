@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
-"""Debug lockstep using pymavlink — guaranteed correct MAVLink framing."""
+"""Debug lockstep using pymavlink — guaranteed correct MAVLink framing.
+
+Environment variables (with defaults derived from repo layout):
+    PX4_SITL_BIN  - path to px4 binary
+                    (default: <repo>/AndroidApp/app/src/main/cpp/PX4-Autopilot/
+                              build/px4_sitl_default/bin/px4)
+    PX4_SITL_CWD  - PX4 working directory (default: dirname(dirname(PX4_SITL_BIN)))
+    ACADOS_LIB    - acados lib dir (default: <repo>/acados-main/lib)
+"""
 import socket, struct, time, sys, os, subprocess, signal
+from pathlib import Path
 from pymavlink import mavutil
 from pymavlink.dialects.v20 import common as mavlink
 
 ACTUATOR_ID = 93
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_M13_ROOT = _SCRIPT_DIR.parents[2]  # <repo>/6DOF_v4_pure/sitl/_dev_tools -> repo
+_DEFAULT_PX4_BIN = _M13_ROOT / "AndroidApp/app/src/main/cpp/PX4-Autopilot/build/px4_sitl_default/bin/px4"
+_DEFAULT_ACADOS_LIB = _M13_ROOT / "acados-main/lib"
+
 def main():
-    PX4_BIN = "/home/yoga/m13/AndroidApp/app/src/main/cpp/PX4-Autopilot/build/px4_sitl_default/bin/px4"
-    PX4_CWD = "/home/yoga/m13/AndroidApp/app/src/main/cpp/PX4-Autopilot/build/px4_sitl_default"
+    PX4_BIN = os.environ.get("PX4_SITL_BIN", str(_DEFAULT_PX4_BIN))
+    PX4_CWD = os.environ.get("PX4_SITL_CWD",
+                             str(Path(PX4_BIN).resolve().parent.parent))
     
     for f in ('parameters.bson', 'parameters_backup.bson'):
         p = os.path.join(PX4_CWD, f)
@@ -26,7 +41,8 @@ def main():
     env = os.environ.copy()
     env['PX4_SYS_AUTOSTART'] = '22003'
     env['PX4_SIM_MODEL'] = 'none'
-    env['LD_LIBRARY_PATH'] = '/home/yoga/m13/acados-main/lib:' + env.get('LD_LIBRARY_PATH', '')
+    acados_lib = os.environ.get("ACADOS_LIB", str(_DEFAULT_ACADOS_LIB))
+    env['LD_LIBRARY_PATH'] = acados_lib + ':' + env.get('LD_LIBRARY_PATH', '')
     px4 = subprocess.Popen(
         [PX4_BIN, '-s', 'etc/init.d-posix/rcS', '-d'],
         env=env, cwd=PX4_CWD,

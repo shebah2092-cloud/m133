@@ -138,15 +138,19 @@ def run_sitl(px4_bin: str = None, sitl_config: str = None,
         px4_env['PX4_SYS_AUTOSTART'] = '22003'  # SITL airframe
         px4_env['PX4_SIM_MODEL'] = 'none'
 
-        # PX4 SITL needs LD_LIBRARY_PATH for acados shared libs
-        acados_lib = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(px4_bin))))))), 
-            '..', '..', '..', '..', '..', 'acados-main', 'lib')
-        # Fallback: try well-known path
-        if not os.path.isdir(acados_lib):
-            acados_lib = '/home/yoga/m13/acados-main/lib'
-        if os.path.isdir(acados_lib):
+        # PX4 SITL needs LD_LIBRARY_PATH for acados shared libs.
+        # Resolution order:
+        #   1. ACADOS_LIB env var (explicit override)
+        #   2. <repo_root>/acados-main/lib (standard layout: _SIM_DIR.parent)
+        #   3. existing LD_LIBRARY_PATH (unmodified)
+        _repo_root = _SIM_DIR.parent
+        acados_lib_candidates = [
+            os.environ.get('ACADOS_LIB'),
+            str(_repo_root / 'acados-main' / 'lib'),
+        ]
+        acados_lib = next((p for p in acados_lib_candidates
+                           if p and os.path.isdir(p)), None)
+        if acados_lib:
             px4_env['LD_LIBRARY_PATH'] = acados_lib + ':' + px4_env.get('LD_LIBRARY_PATH', '')
 
         # PX4 SITL working directory must be build/px4_sitl_default
