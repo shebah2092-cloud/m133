@@ -169,26 +169,33 @@ class MheEstimator:
         yref_0 = np.concatenate([y0, np.zeros(NW_MHE), x_bar])
         self._solver.set(0, "yref", yref_0)
 
-        # Stages 1..N_use-1: measurement + noise
-        for k in range(1, min(N_use, self._N)):
+        # Stages 1..N-1: measurement + noise.  Fill ALL intermediate stages
+        # so the NLP cost is well-defined during startup when the window is
+        # not yet full.  For stages beyond the current measurement window we
+        # repeat the most recent measurement (mirrors the C++ runtime in
+        # mhe_estimator.cpp::update to keep behaviour consistent).
+        y_last = meas_window[-1][1]
+        for k in range(1, self._N):
             if k < len(meas_window):
                 yk = meas_window[k][1]
             else:
-                yk = meas_window[-1][1]
+                yk = y_last
             yref_k = np.concatenate([yk, np.zeros(NW_MHE)])
             self._solver.set(k, "yref", yref_k)
 
-        # Parameters for each interval
-        for k in range(min(N_use, self._N)):
+        # Parameters for every interval 0..N-1 plus the terminal node.
+        # Same fallback as the measurement loop: after n_use samples, freeze
+        # on the newest param vector so every stage sees a well-defined p.
+        p_last = param_window[-1][1] if param_window else np.zeros(9)
+        for k in range(self._N):
             if k < len(param_window):
                 p_k = param_window[k][1]
             else:
-                p_k = param_window[-1][1]
+                p_k = p_last
             self._solver.set(k, "p", p_k)
 
         # Terminal stage parameters
-        p_term = param_window[-1][1] if param_window else np.zeros(9)
-        self._solver.set(self._N, "p", p_term)
+        self._solver.set(self._N, "p", p_last)
 
         # --- Solve ---
         t0 = time.perf_counter()
