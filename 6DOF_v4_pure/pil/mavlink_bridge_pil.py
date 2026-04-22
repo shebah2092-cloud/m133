@@ -713,7 +713,12 @@ class PILBridge:
             np.array(snap.get("control_fins_rad", np.zeros(4)))
         )
         self.flight["forces"].append(np.array(snap.get("forces", [0, 0, 0])))
-        self.flight["altitude"].append(s["alt"] - self.launch_alt)
+        # Log absolute MSL altitude to match the baseline comparison feed.
+        # The previous `s["alt"] - self.launch_alt` produced an AGL signal which
+        # differed from the baseline's MSL trace by a constant self.launch_alt
+        # (= 1200 m by default), producing a fake steady 1200 m "error" in the
+        # altitude comparison report.
+        self.flight["altitude"].append(s["alt"])
         pos = state[0:3]
         if self.sim.long_range_mode:
             rng = snap.get("ground_range_km", 0.0) * 1000.0

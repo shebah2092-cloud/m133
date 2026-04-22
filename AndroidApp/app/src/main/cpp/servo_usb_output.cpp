@@ -13,6 +13,7 @@
 #include <uORB/topics/actuator_test.h>
 #include <uORB/topics/actuator_armed.h>
 #include <drivers/drv_hrt.h>
+#include <parameters/param.h>
 
 #include <libusb.h>
 
@@ -30,9 +31,19 @@
 
 // ===== XQPOWER Protocol Constants (من مشروع الصديق) =====
 static const uint16_t SERVO_IDS[4] = {0x601, 0x602, 0x603, 0x604};
+// MAX_ANGLE_DEG is the *hardware* deflection range (±25°) used for encoding
+// into the 14-bit XQPOWER position register and as the final safety clamp in
+// encode_servo().  It is intentionally decoupled from the *control* scaling
+// limit used below (the XQCAN_LIMIT parameter, typically 20° to match
+// SOLVER_DELTA_MAX_RAD).  Do not conflate them: the register scale must stay
+// at 25° or the servo position mapping breaks.
 static constexpr float MAX_ANGLE_DEG = 25.0f;
 static constexpr int XQPOWER_CENTER = 8191;   // 14-bit center
 static constexpr float XQPOWER_SCALE = 327.64f; // degrees → position units (= 8191 / 25.0)
+
+// Fallback scaling limit if XQCAN_LIMIT cannot be read.  Matches
+// SOLVER_DELTA_MAX_RAD (~0.3491 rad = 20°) from the acados solver.
+static constexpr float DEFAULT_SCALING_LIMIT_DEG = 20.0f;
 
 // ===== CP2102 USB-Serial Constants =====
 static constexpr uint16_t CP2102_VID = 0x10C4;
@@ -219,6 +230,26 @@ static bool usb_send(const uint8_t* data, int len) {
 static void servo_output_loop() {
     LOGI_S("Servo output thread started (multi-source, priority-based)");
 
+    // Read XQCAN_LIMIT to match the XqpowerCan driver's scaling semantics.
+    // This is the ±limit (in degrees) that a full-scale normalized command
+    // (|actuator_servos.control| = 1.0) maps to.  It MUST match
+    // SOLVER_DELTA_MAX_RAD baked into the acados solver (20° by default),
+    // otherwise USB servos and CAN servos will deflect by different amounts
+    // for the same MPC command.
+    float scaling_limit_deg = DEFAULT_SCALING_LIMIT_DEG;
+    {
+        param_t p = param_find("XQCAN_LIMIT");
+        if (p != PARAM_INVALID) {
+            float v = 0.0f;
+            if (param_get(p, &v) == 0 && v > 0.1f) {
+                scaling_limit_deg = v;
+            }
+        }
+        LOGI_S("Scaling limit: %.2f deg (from %s)",
+               (double)scaling_limit_deg,
+               (scaling_limit_deg == DEFAULT_SCALING_LIMIT_DEG) ? "default" : "XQCAN_LIMIT");
+    }
+
     // Subscriptions — same as XqpowerCan in folder 66
     uORB::Subscription armed_sub{ORB_ID(actuator_armed)};             // Armed state check
     uORB::Subscription servos_sub{ORB_ID(actuator_servos)};           // Priority 1: Control Allocator
@@ -293,7 +324,7 @@ static void servo_output_loop() {
                 if (test.action == actuator_test_s::ACTION_DO_CONTROL &&
                     test.function >= 201 && test.function <= 204) {
                     int idx = test.function - 201;
-                    fin_angles[idx] = test.value * MAX_ANGLE_DEG;
+                    fin_angles[idx] = test.value * scaling_limit_deg;
                     has_data = true;
                 }
             }
@@ -303,18 +334,32 @@ static void servo_output_loop() {
                 // Priority 1: Control Allocator output (actuator_servos)
                 actuator_servos_s servos{};
                 if (servos_sub.update(&servos)) {
+                    // actuator_servos.control[] is normalized [-1,+1] from control_allocator.
+                    // Scale by XQCAN_LIMIT (not MAX_ANGLE_DEG) to match XqpowerCan's
+                    // XqpowerCan.cpp:1273 (`angle_deg = val * _angle_limit`).  Using
+                    // MAX_ANGLE_DEG=25 here while xqpower_can uses XQCAN_LIMIT=20 would
+                    // make USB servos over-deflect by 25% vs CAN servos.
                     for (int i = 0; i < 4; i++) {
-                        fin_angles[i] = servos.control[i] * MAX_ANGLE_DEG;
+                        fin_angles[i] = servos.control[i] * scaling_limit_deg;
                     }
                     has_data = true;
                 }
 
                 // Priority 2: RocketGNC direct output (actuator_outputs_sim)
+                //
+                // rocket_mpc publishes fin deflections in RADIANS on this topic
+                // (see RocketMPC.cpp sim_path branch).  Multiplying by
+                // MAX_ANGLE_DEG here would interpret them as normalized [-1,+1]
+                // and produce only ~43% of the intended deflection
+                // (SOLVER_DELTA_MAX_RAD ~= 0.349 rad, 0.349 * 25 = 8.73 deg
+                // vs the expected 20 deg).  Convert rad -> deg instead, matching
+                // the HIL branch of the XqpowerCan driver.
                 if (!has_data) {
                     actuator_outputs_s sim_out{};
                     if (sim_out_sub.update(&sim_out)) {
+                        constexpr float RAD2DEG = 180.0f / (float)M_PI;
                         for (int i = 0; i < 4; i++) {
-                            fin_angles[i] = sim_out.output[i] * MAX_ANGLE_DEG;
+                            fin_angles[i] = sim_out.output[i] * RAD2DEG;
                         }
                         has_data = true;
                     }

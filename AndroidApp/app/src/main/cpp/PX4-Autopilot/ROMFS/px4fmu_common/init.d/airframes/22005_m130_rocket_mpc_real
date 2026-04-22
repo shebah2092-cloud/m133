@@ -31,6 +31,10 @@ param set SENS_EN_GPSSIM 0
 param set SENS_EN_BAROSIM 0
 param set SENS_EN_MAGSIM 0
 
+# MHE must read real sensor_gps (not EKF2 lpos).  Force 0 even if a previous
+# SITL session left ROCKET_SITL_GPS=1 in saved parameters.
+param set ROCKET_SITL_GPS 0
+
 # ---- Magnetometer — IST8310 on MicoAir H743 ----
 param set EKF2_MAG_TYPE    6    # init-only
 param set SYS_HAS_MAG      1

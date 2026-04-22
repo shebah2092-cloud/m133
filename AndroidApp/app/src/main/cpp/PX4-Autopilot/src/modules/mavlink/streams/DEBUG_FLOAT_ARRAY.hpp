@@ -110,7 +110,7 @@ private:
 			msg.data[3]  = gnc.q_kgf;
 			msg.data[4]  = gnc.pitch_accel_cmd;
 			msg.data[5]  = gnc.yaw_accel_cmd;
-			msg.data[6]  = gnc.yaw_los_deg;
+			msg.data[6]  = gnc.blend_alpha;
 			msg.data[7]  = gnc.delta_roll;
 			msg.data[8]  = gnc.delta_pitch;
 			msg.data[9]  = gnc.delta_yaw;
@@ -123,11 +123,11 @@ private:
 			msg.data[16] = gnc.rho;
 			msg.data[17] = (float)gnc.servo_online_mask;
 
-			// Currently missing from existing topic
+			// Solver / MHE diagnostics (renamed from repurposed legacy fields)
 			msg.data[18] = gnc.phi;
-			msg.data[19] = gnc.wx_filter;
-			msg.data[20] = gnc.du_roll;
-			msg.data[21] = gnc.out_integ_roll;
+			msg.data[19] = gnc.mpc_solve_ms;
+			msg.data[20] = gnc.mhe_quality;
+			msg.data[21] = (float)gnc.mpc_solve_count;
 
 			// New fields - attitude angles
 			msg.data[22] = gnc.theta;

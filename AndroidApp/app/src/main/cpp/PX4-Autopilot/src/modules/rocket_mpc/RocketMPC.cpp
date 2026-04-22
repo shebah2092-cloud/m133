@@ -353,6 +353,14 @@ void RocketMPC::_reset_flight_state()
 	_last_de = 0.0f; _last_dr = 0.0f; _last_da = 0.0f;
 	_last_mpc_solve_time = 0;
 
+	// MPC state & diagnostics snapshot
+	memset(_last_x_mpc, 0, sizeof(_last_x_mpc));
+	_have_x_mpc = false;
+	_last_mpc_status = -1;
+	_last_mpc_sqp_iter = 0;
+	_last_mhe_status = -1;
+	_last_mhe_valid = false;
+
 	// Solver & guidance sub-modules
 	_mpc.reset();
 	_mhe.reset();
@@ -886,9 +894,24 @@ void RocketMPC::Run()
 
 		const bool mhe_authority = mhe_finite && mhe_out.quality >= qg_thr;
 
-		if (mhe_authority) {
-			_mhe_publishing = true;
+		// Snapshot MHE diagnostics for rocket_gnc_status telemetry.
+		_last_mhe_status = mhe_out.status;
+		_last_mhe_valid  = mhe_authority;
 
+		// NOTE on _mhe_publishing:
+		//   This flag is reset to its final per-cycle value near the end of the
+		//   loop, after the cooperative blend has been computed.  We used to
+		//   latch it to `true` here on the first successful MHE solve and never
+		//   clear it, which caused the telemetry fields below (altitude,
+		//   airspeed, phi/theta/psi, pos_*, vel_*, alpha_est, gamma_rad) to
+		//   freeze on the last MHE snapshot if MHE later stopped solving or
+		//   failed the quality gate.  The new definition is dynamic:
+		//       _mhe_publishing = (_blend_alpha > 0.1f)
+		//   i.e. publish MHE-origin state only while MHE is meaningfully
+		//   contributing to the control state.  We do NOT touch the flag
+		//   here, so the current-cycle MHE snapshot below is still built
+		//   unconditionally on any successful solve.
+		if (mhe_authority) {
 			// Convert MHE flight-dynamics states → Euler angles
 			const float gamma = (float)mhe_out.x_hat[IX_GAMMA];
 			const float chi   = (float)mhe_out.x_hat[IX_CHI];
@@ -1121,6 +1144,11 @@ void RocketMPC::Run()
 		// Update stored blend after cross-validation
 		_blend_alpha = blend;
 
+		// Re-evaluate MHE publishing authority for this cycle.  See the note
+		// next to the `if (mhe_authority)` block above — publish MHE-origin
+		// telemetry only while MHE is meaningfully contributing to the state.
+		_mhe_publishing = (_blend_alpha > 0.1f);
+
 		// ----- Smooth blend: state = (1-blend)*EKF + blend*MHE -----
 		V_mpc     = vm;  // Velocity always from EKF2 (MHE has known bias)
 		gamma_mpc = (1.0f - blend) * ekf_gamma + blend * mhe_gamma;
@@ -1207,6 +1235,14 @@ void RocketMPC::Run()
 			x_mpc[16] = (double)_dr_act;
 			x_mpc[17] = (double)_da_act;
 
+			// Snapshot x_mpc for rocket_gnc_status (float32[18]).  We stash it
+			// before the NaN guard so the telemetry also shows the last rejected
+			// x_mpc when a bad state led to a skipped solve.
+			for (int i = 0; i < MPC_NX; i++) {
+				_last_x_mpc[i] = (float)x_mpc[i];
+			}
+			_have_x_mpc = true;
+
 			float h_ref_scaled = _los.cruise_alt_set()
 					     ? (_los.cruise_alt_target() / H_SCALE)
 					     : 0.0f;
@@ -1274,6 +1310,10 @@ void RocketMPC::Run()
 
 				mpc_status   = res.status;
 				mpc_solve_ms = res.solve_time_ms;
+
+				// Snapshot MPC diagnostics for telemetry
+				_last_mpc_status   = res.status;
+				_last_mpc_sqp_iter = (uint32_t)((res.sqp_iter > 0) ? res.sqp_iter : 0);
 
 			} // !skip_solve
 		}
@@ -1349,13 +1389,32 @@ void RocketMPC::Run()
 		status.airspeed         = _mhe_publishing ? _mhe_vm : vm;
 		status.rho              = air.rho;
 		status.phi              = _mhe_publishing ? _mhe_phi : euler.phi();
-		status.wx_filter        = mpc_solve_ms;   // repurpose: MPC solve time
-		status.du_roll          = mhe_quality;     // repurpose: MHE quality
-		status.out_integ_roll   = (float)_mpc.solve_count();
-		status.yaw_los_deg      = _blend_alpha;    // repurpose: EKF-MHE blend factor [0..1]
-
 		status.theta            = _mhe_publishing ? _mhe_theta : euler.theta();
 		status.psi              = _mhe_publishing ? _mhe_psi   : euler.psi();
+
+		// --- EKF-MHE cooperation ---
+		status.blend_alpha      = _blend_alpha;
+		status.mhe_quality      = mhe_quality;
+		status.mhe_valid        = _last_mhe_valid ? 1 : 0;
+		status.mhe_status       = _last_mhe_status;
+
+		// --- Solver performance ---
+		status.mhe_solve_ms      = mhe_solve_ms;
+		status.mpc_solve_ms      = mpc_solve_ms;
+		status.mpc_solver_status = _last_mpc_status;
+		status.mpc_sqp_iter      = _last_mpc_sqp_iter;
+		status.mpc_solve_count   = (uint32_t)_mpc.solve_count();
+
+		// --- Cross-validation ---
+		status.xval_gamma_err   = _xval.gamma_err;
+		status.xval_chi_err     = _xval.chi_err;
+		status.xval_alt_err     = _xval.alt_err;
+		status.xval_penalty     = _xval.penalty;
+
+		// --- Full MPC state vector ---
+		for (int i = 0; i < 18; i++) {
+			status.x_mpc[i] = _have_x_mpc ? _last_x_mpc[i] : 0.0f;
+		}
 
 		// Compute alpha_est and gamma_rad for logging.
 		// γ is positive when climbing. _mhe_vz is NED-down (negative when climbing),

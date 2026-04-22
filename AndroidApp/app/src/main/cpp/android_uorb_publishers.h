@@ -12,3 +12,4 @@ bool  get_vehicle_armed();
 int   get_vehicle_nav_state();
 int   get_ekf_status();
 int   get_airframe_id();
+bool  set_airframe_id(int id);
