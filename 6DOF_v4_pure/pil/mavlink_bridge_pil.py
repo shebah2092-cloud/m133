@@ -472,8 +472,9 @@ class PILBridge:
                 "تحقّق أن PX4 مُقلع على الجهاز الهدف وأن عنوان الشبكة صحيح."
             ) from e
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        # اجعل المقبس غير حاجب مرة واحدة (نتجنّب تبديل setblocking كل استدعاء)
-        self._sock.setblocking(False)
+        # نُبقي المقبس في وضع blocking افتراضياً لأن _send يستخدم sendall()
+        # الذي يرمي BlockingIOError على non-blocking socket حين يمتلئ TCP
+        # send buffer. التبديل إلى non-blocking يحدث داخل _recv_nonblock فقط.
         srv.close()
         print(f"[PIL] Target connected from {addr}")
 
@@ -572,10 +573,16 @@ class PILBridge:
             self._running = False
 
     def _recv_nonblock(self) -> list:
-        # المقبس مُهيّأ كغير-حاجب في accept() — لا حاجة لتبديل setblocking هنا.
+        # نُبدّل الـsocket إلى non-blocking لقراءة واحدة فقط ثم نُعيده إلى
+        # blocking. الإبقاء على blocking ضروري لـ sendall() في _send الذي يرمي
+        # BlockingIOError على non-blocking socket حين يمتلئ TCP send buffer
+        # (مطابق لنمط hil/mavlink_bridge_hil.py::_recv_nonblock).
+        # _send و _recv_nonblock يُستدعيان من الخيط الرئيسي فقط (خيط
+        # 5760 له socket منفصل)، فلا حاجة لقفل هنا.
         if self._sock is None:
             return []
         try:
+            self._sock.setblocking(False)
             data = self._sock.recv(4096)
             if not data:
                 self._running = False
@@ -586,6 +593,12 @@ class PILBridge:
         except (ConnectionResetError, BrokenPipeError, OSError):
             self._running = False
             return []
+        finally:
+            if self._sock is not None:
+                try:
+                    self._sock.setblocking(True)
+                except OSError:
+                    pass
 
     # ─── بناء بيانات الحسّاسات ───────────────────────────────────────────────
 
