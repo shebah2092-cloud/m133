@@ -170,9 +170,36 @@ def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
     ocp.constraints.idxbx = np.array([3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17])
 
     # ── قيود polytopic لخلط الزعانف (Fin Mixing Anti-Saturation) ──
-    # Polytopic constraints: ensure no individual fin exceeds ±δ_max after mixing
+    # Polytopic constraints: ensure no individual fin exceeds ±δ_max after mixing.
     # تُطبق على المواقع الفعلية (actual) لأنها ما يحدد القيد الفيزيائي
     # Mixing: fin1 = δa-δe-δr, fin2 = δa-δe+δr, fin3 = δa+δe+δr, fin4 = δa+δe-δr
+    #
+    # Design note (intentional asymmetry):
+    # The polytopic mix-sum bound is applied *only* to x[15..17] (delta_*_act),
+    # not to x[12..14] (delta_*_s). delta_*_s only has individual ±delta_max
+    # box bounds. Rationale: the physical constraint lives on the actuated
+    # servo, and first-order lag dynamics (delta_*_act_dot = (delta_*_s −
+    # delta_*_act) / tau_servo) mean the solver can temporarily push
+    # delta_*_s outside the mixed-fin feasible set in order to drive
+    # delta_*_act toward a target more aggressively, while the lag absorbs
+    # the overshoot before it reaches the plant. Extracting this freedom
+    # lets the solver track faster when it matters.
+    #
+    # Consequence on the PX4 side: RocketMPC.cpp extracts
+    # (delta_e, delta_r, delta_a) from x1[12..14] (delta_*_s) and mixes
+    # them itself, so the mixed command it publishes can exceed
+    # ±delta_max in aggressive transients even when the solver succeeds.
+    # RocketMPC therefore re-applies math::constrain() per fin AFTER the
+    # mix — that clamp is NOT merely a fallback for SQP failures, it is
+    # the actual enforcement of the mix-sum bound on the commanded path.
+    # A pseudo-inverse back-solve then feeds the clamped composition to
+    # MHE as delta_*_act so the estimator sees what the servos really
+    # executed. See RocketMPC.cpp:~1400 and _fin_clamp_* counters.
+    #
+    # If per-fin-clamp telemetry shows the clamp firing often in steady
+    # flight, add four more polytopic rows mirroring these on x[12..14]
+    # (and regenerate the solver); that sacrifices some transient tracking
+    # for a cleaner commanded-vs-executed invariant.
     n_poly = 4
     C_poly = np.zeros((n_poly, nx))
     D_poly = np.zeros((n_poly, nu))

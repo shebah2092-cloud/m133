@@ -381,6 +381,16 @@ void RocketMPC::_reset_flight_state()
 	_last_de = 0.0f; _last_dr = 0.0f; _last_da = 0.0f;
 	_last_mpc_solve_time = 0;
 
+	// Per-fin clamp telemetry is per-flight: clear so PX4_INFO reports
+	// only the current flight's activation rate and the ~500-solve
+	// cadence is not offset by counters left over from the previous
+	// flight. _reset_flight_state() runs on both arm→launch and
+	// disarm transitions.
+	memset(_fin_clamp_count, 0, sizeof(_fin_clamp_count));
+	_fin_clamp_any = 0;
+	_fin_clamp_solves = 0;
+	_fin_clamp_report_at = 0;
+
 	// MPC state & diagnostics snapshot
 	memset(_last_x_mpc, 0, sizeof(_last_x_mpc));
 	_have_x_mpc = false;
@@ -1393,16 +1403,61 @@ void RocketMPC::Run()
 					// Clamp individual deflections to physical servo limit.
 					// NOTE: max_d MUST match the delta_max baked into the acados solver
 					// (see SOLVER_DELTA_MAX_RAD above and m130_ocp_setup.py::delta_max).
+					// The solver's box constraint on x[12..14] (delta_*_s) already
+					// enforces |delta_e/r/a| <= delta_max per-channel; this clamp is
+					// a numerical-edge safety net.
 					const float max_d = SOLVER_DELTA_MAX_RAD;
 					delta_e = math::constrain(res.delta_e, -max_d, max_d);
 					delta_r = math::constrain(res.delta_r, -max_d, max_d);
 					delta_a = math::constrain(res.delta_a, -max_d, max_d);
 
-					// Recompute X-fin mixing with clamped values
-					fin[0] = math::constrain(delta_a - delta_e - delta_r, -max_d, max_d);
-					fin[1] = math::constrain(delta_a - delta_e + delta_r, -max_d, max_d);
-					fin[2] = math::constrain(delta_a + delta_e + delta_r, -max_d, max_d);
-					fin[3] = math::constrain(delta_a + delta_e - delta_r, -max_d, max_d);
+					// Recompute X-fin mixing with clamped values.
+					// The per-fin clamp here is NOT redundant: the acados
+					// polytopic constraint in m130_ocp_setup.py couples the
+					// four fins only on the *actual* servo state (x[15..17]).
+					// x[12..14] (delta_*_s — what we use above) only has
+					// individual box bounds, so the mixed sum can exceed
+					// delta_max in aggressive transients even with a
+					// successful solve. This clamp is the enforcement of the
+					// polytopic fin-mix bound on the commanded path; the
+					// back-solve below then feeds the clamped composition
+					// to MHE so the estimator sees what the servos really
+					// executed. _fin_clamp_* below tracks activation rate.
+					float fin_raw[4] = {
+						delta_a - delta_e - delta_r,
+						delta_a - delta_e + delta_r,
+						delta_a + delta_e + delta_r,
+						delta_a + delta_e - delta_r,
+					};
+					bool any_clamped = false;
+
+					for (int i = 0; i < 4; i++) {
+						fin[i] = math::constrain(fin_raw[i], -max_d, max_d);
+
+						if (fin[i] != fin_raw[i]) {
+							_fin_clamp_count[i]++;
+							any_clamped = true;
+						}
+					}
+
+					_fin_clamp_solves++;
+
+					if (any_clamped) { _fin_clamp_any++; }
+
+					// Periodic summary: every 500 valid solves (~10 s @ 50Hz).
+					// Only emit if the clamp actually fired since last report,
+					// so steady-state flight stays silent. Persistent non-zero
+					// rates argue for adding polytopic on delta_*_s in the OCP.
+					if (_fin_clamp_solves >= _fin_clamp_report_at + 500) {
+						if (_fin_clamp_any > 0) {
+							PX4_INFO("MPC per-fin clamp: %u/%u solves (%u/%u/%u/%u per fin)",
+								 _fin_clamp_any, _fin_clamp_solves,
+								 _fin_clamp_count[0], _fin_clamp_count[1],
+								 _fin_clamp_count[2], _fin_clamp_count[3]);
+						}
+
+						_fin_clamp_report_at = _fin_clamp_solves;
+					}
 
 					// Cache for lockstep republish on intermediate ticks
 					_last_fins[0] = fin[0];
