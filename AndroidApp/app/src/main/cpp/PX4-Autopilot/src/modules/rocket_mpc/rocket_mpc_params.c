@@ -174,17 +174,28 @@ PARAM_DEFINE_FLOAT(ROCKET_TBURN, 4.772f);
 PARAM_DEFINE_FLOAT(ROCKET_IMPULS, 3593.2f);
 
 /**
- * Thrust plateau
+ * Thrust plateau (manual override, advanced)
  *
- * Steady-state thrust during propulsive phase.
+ * Steady-state thrust during the propulsive phase.
+ *
+ * Leave at 0 (default) to auto-derive from impulse, burn time and tail-off:
+ *     T_plateau = ROCKET_IMPULS / (ROCKET_TBURN - 0.75 * ROCKET_T_TAIL)
+ * This keeps the plateau in lock-step with the propulsion parameter set and
+ * matches the Python simulation reference.
+ *
+ * Any positive value is treated as an advanced override and bypasses the
+ * derivation — use only when characterising a motor whose profile is not
+ * captured by the impulse/burn-time/tail-off triplet. Mismatching the
+ * override with the rest of the propulsion params will silently skew MPC
+ * gamma tracking during boost.
  *
  * @unit N
- * @min 1.0
+ * @min 0.0
  * @max 5000000.0
  * @decimal 1
  * @group Rocket MPC
  */
-PARAM_DEFINE_FLOAT(ROCKET_THRUST, 893.474f);
+PARAM_DEFINE_FLOAT(ROCKET_THRUST, 0.0f);
 
 /**
  * Tail-off duration

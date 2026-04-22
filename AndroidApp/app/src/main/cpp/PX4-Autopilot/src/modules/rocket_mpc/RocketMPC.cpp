@@ -72,6 +72,34 @@ static float compute_gamma_natural(float total_impulse, float burn_time,
 	return atan2f(a_v, (a_h > 1.0f) ? a_h : 1.0f);
 }
 
+// Plateau thrust derived from total impulse, burn time and tail-off duration.
+// Mirrors the Python reference (m130_mpc_autopilot.py:81-85):
+//   T_plateau = total_impulse / (burn_time - 0.75 * t_tail)
+// This is ~15-20% higher than the simple average (impulse/burn_time) and
+// compensates for the cubic tail-off profile used by get_params(): the
+// plateau is the steady-state thrust during the flat propulsive phase, so
+// that the integral over [0, burn_time] matches the measured total impulse.
+//
+// Fallback to impulse/burn_time when the tail-off window would invalidate
+// the formula (burn_time <= 0.75 * t_tail), matching the Python branch.
+static float compute_thrust_plateau(float total_impulse, float burn_time,
+				    float t_tail)
+{
+	if (burn_time <= 0.0f) {
+		return 0.0f;
+	}
+
+	const float denom = burn_time - 0.75f * t_tail;
+
+	if (denom > 1e-3f) {
+		return total_impulse / denom;
+	}
+
+	// Degenerate geometry: tail-off longer than burn_time — fall back to
+	// average thrust rather than emitting an over-scaled plateau.
+	return total_impulse / burn_time;
+}
+
 // ===================================================================
 //  Custom work queue — acados NLP solver (N=80, NX=18) needs ~48KB
 //  stack at runtime.  The default nav_and_controllers queue only
@@ -130,13 +158,30 @@ bool RocketMPC::init()
 	const float mass_dry       = _param_mass_dry.get();
 	const float burn_time      = _param_burn_time.get();
 	const float impulse        = _param_impulse.get();
-	const float thrust         = _param_thrust.get();
+	const float thrust_override = _param_thrust.get();
 	const float t_tail         = _param_t_tail.get();
 	const float tau_servo      = _param_tau_servo.get();
 	const float target_x       = _param_xtrgt.get();
 	const float target_h       = _param_htrgt.get();
 	const float impact_ang_deg = _param_imp_ang.get();
 	const float launch_pitch   = _param_launch_pitch.get();
+
+	// Derive plateau thrust from propulsion params (impulse / (t_burn - 0.75·t_tail))
+	// to stay consistent with the Python reference. ROCKET_THRUST is treated as
+	// an optional manual override: 0 (or negative) means "auto-derive", any
+	// positive value overrides the derivation (advanced/experimental only).
+	const float thrust_derived = compute_thrust_plateau(impulse, burn_time, t_tail);
+	const bool  thrust_overridden = (thrust_override > 0.0f);
+	const float thrust_plateau = thrust_overridden ? thrust_override : thrust_derived;
+
+	if (thrust_overridden) {
+		PX4_WARN("ROCKET_THRUST override active: using %.1f N (derived would be %.1f N)",
+			 (double)thrust_override, (double)thrust_derived);
+
+	} else {
+		PX4_INFO("Thrust plateau derived: %.1f N (impulse=%.1f, t_burn=%.3f, t_tail=%.3f)",
+			 (double)thrust_derived, (double)impulse, (double)burn_time, (double)t_tail);
+	}
 
 	// Initialize MPC solver
 	MpcConfig mpc_cfg;
@@ -149,7 +194,7 @@ bool RocketMPC::init()
 	mpc_cfg.mass_full       = mass_full;
 	mpc_cfg.mass_dry        = mass_dry;
 	mpc_cfg.burn_time       = burn_time;
-	mpc_cfg.thrust_plateau  = thrust;
+	mpc_cfg.thrust_plateau  = thrust_plateau;
 	mpc_cfg.t_tail          = t_tail;
 	mpc_cfg.Ixx_full = _param_ixx_f.get(); mpc_cfg.Ixx_dry = _param_ixx_d.get();
 	mpc_cfg.Iyy_full = _param_iyy_f.get(); mpc_cfg.Iyy_dry = _param_iyy_d.get();
@@ -238,6 +283,20 @@ void RocketMPC::parameters_update(bool force)
 			_param_launch_pitch.get(), _param_mass_full.get());
 		mcfg.gamma_natural_rad = gamma_natural;
 		mcfg.burn_time         = _param_burn_time.get();
+		mcfg.t_tail            = _param_t_tail.get();
+		mcfg.mass_full         = _param_mass_full.get();
+		mcfg.mass_dry          = _param_mass_dry.get();
+
+		// Re-derive the plateau thrust so changes to ROCKET_IMPULS,
+		// ROCKET_TBURN or ROCKET_T_TAIL take effect on the next solve
+		// instead of silently leaving the old plateau in place. Any
+		// positive ROCKET_THRUST still wins as a manual override.
+		const float thrust_override = _param_thrust.get();
+		const float thrust_derived  = compute_thrust_plateau(
+			_param_impulse.get(), _param_burn_time.get(),
+			_param_t_tail.get());
+		mcfg.thrust_plateau = (thrust_override > 0.0f) ? thrust_override
+								: thrust_derived;
 
 		_los.configure_target(_param_xtrgt.get(), _param_htrgt.get(),
 				      _param_imp_ang.get());
