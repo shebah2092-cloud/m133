@@ -217,7 +217,6 @@ bool RocketMPC::init()
 	mhe_cfg.horizon_dt    = 0.02f;
 	mhe_cfg.solve_rate_hz = 50.0f;
 	mhe_cfg.max_consec_fails = 10;
-	mhe_cfg.quality_gate  = _param_mhe_qg.get();
 	// Require a FULL measurement window before the first solve so that every
 	// horizon stage (0..N) carries a real measurement. Previously =10 which
 	// allowed stages N/2..N-1 to repeat the last measurement, injecting a
@@ -282,8 +281,8 @@ void RocketMPC::parameters_update(bool force)
 		// Recompute gamma_natural from current propulsion/launch params so
 		// LOS feedforward and MPC config stay consistent with the param set.
 		const float gamma_natural = compute_gamma_natural(
-			_param_impulse.get(), _param_burn_time.get(),
-			_param_launch_pitch.get(), _param_mass_full.get());
+						    _param_impulse.get(), _param_burn_time.get(),
+						    _param_launch_pitch.get(), _param_mass_full.get());
 		mcfg.gamma_natural_rad = gamma_natural;
 		mcfg.burn_time         = _param_burn_time.get();
 		mcfg.t_tail            = _param_t_tail.get();
@@ -296,19 +295,15 @@ void RocketMPC::parameters_update(bool force)
 		// positive ROCKET_THRUST still wins as a manual override.
 		const float thrust_override = _param_thrust.get();
 		const float thrust_derived  = compute_thrust_plateau(
-			_param_impulse.get(), _param_burn_time.get(),
-			_param_t_tail.get());
+						      _param_impulse.get(), _param_burn_time.get(),
+						      _param_t_tail.get());
 		mcfg.thrust_plateau = (thrust_override > 0.0f) ? thrust_override
-								: thrust_derived;
+				      : thrust_derived;
 
 		_los.configure_target(_param_xtrgt.get(), _param_htrgt.get(),
 				      _param_imp_ang.get());
 		_los.set_gamma_natural(gamma_natural);
 		_los.set_burn_time(_param_burn_time.get());
-
-		// Keep MHE quality gate in sync (used by any consumer that reads
-		// MheConfig directly; the blend gate in Run() uses mcfg.quality_gate_thr).
-		_mhe.mutable_config().quality_gate = _param_mhe_qg.get();
 
 		_sensor.set_launch_alt(_param_launch_alt.get());
 		_target_downrange = _param_xtrgt.get();
@@ -320,6 +315,24 @@ void RocketMPC::parameters_update(bool force)
 //  MPC/MHE solve is rate-limited to ~50Hz (20ms).
 //  actuator_outputs_sim is ALWAYS published (critical for lockstep).
 // ===================================================================
+
+float RocketMPC::_bearing_from_quat(const Quatf &q, float fallback)
+{
+	// Body→NED DCM. Column 0 is the body-X axis expressed in NED.
+	const Dcmf R(q);
+	const float bx_n = R(0, 0);  // body-X north component
+	const float bx_e = R(1, 0);  // body-X east  component
+	const float bx_h = sqrtf(bx_n * bx_n + bx_e * bx_e);
+
+	// When the rocket points nearly straight up, the horizontal projection
+	// of body-X vanishes and bearing is genuinely undefined. Keep the
+	// previous value instead of returning a noisy atan2(ε, ε).
+	if (bx_h < 1e-2f) {
+		return fallback;
+	}
+
+	return atan2f(bx_e, bx_n);
+}
 
 void RocketMPC::_reset_flight_state()
 {
@@ -387,39 +400,49 @@ void RocketMPC::Run()
 		cpu_set_t cs;
 		CPU_ZERO(&cs);
 		long ncpu = sysconf(_SC_NPROCESSORS_CONF);
+
 		if (ncpu < 1) { ncpu = 8; }
 
 		long cap[64] = {};
 		long cap_max = 0;
 		bool have_cap = false;
+
 		for (long c = 0; c < ncpu && c < 64; ++c) {
 			char path[96];
 			snprintf(path, sizeof(path),
 				 "/sys/devices/system/cpu/cpu%ld/cpu_capacity", c);
 			FILE *f = fopen(path, "r");
+
 			if (f) {
 				if (fscanf(f, "%ld", &cap[c]) == 1 && cap[c] > 0) {
 					have_cap = true;
+
 					if (cap[c] > cap_max) { cap_max = cap[c]; }
 				}
+
 				fclose(f);
 			}
 		}
 
 		int n_big = 0;
+
 		if (have_cap && cap_max > 0) {
 			long thr = cap_max / 2;
+
 			for (long c = 0; c < ncpu && c < 64; ++c) {
 				if (cap[c] >= thr) { CPU_SET((int)c, &cs); ++n_big; }
 			}
 		}
+
 		if (n_big == 0) {
 			// Fallback: top half of CPUs (usually big cluster).
 			long start = ncpu / 2;
+
 			for (long c = start; c < ncpu && c < 64; ++c) {
 				CPU_SET((int)c, &cs); ++n_big;
 			}
 		}
+
 		int aff_rc = sched_setaffinity(tid, sizeof(cs), &cs);
 
 		// SCHED_FIFO highest safe priority (below kernel threads).
@@ -467,12 +490,15 @@ void RocketMPC::Run()
 			_actual_launch_alt_msl = lpos.ref_alt;
 			_launch_alt_captured = true;
 		}
+
 		if (lpos.xy_valid && lpos.z_valid) {
 			_sensor.update_from_lpos(lpos);
 		}
+
 	} else {
 		// Real flight: raw GPS for independent MHE position measurements
 		sensor_gps_s gps{};
+
 		if (_sensor_gps_sub.copy(&gps) && gps.fix_type >= sensor_gps_s::FIX_TYPE_3D) {
 			_sensor.update_gps(gps);
 		}
@@ -486,13 +512,13 @@ void RocketMPC::Run()
 	if (is_armed && !_armed) {
 		if (att.timestamp == 0) {
 			mavlink_log_critical(&_mavlink_log_pub,
-				"ROCKET MPC: NO ATTITUDE DATA");
+					     "ROCKET MPC: NO ATTITUDE DATA");
 			PX4_ERR("NO ATTITUDE DATA at arming");
 		}
 
 		if (!lpos.xy_valid || !lpos.z_valid) {
 			mavlink_log_critical(&_mavlink_log_pub,
-				"ROCKET MPC: NO POSITION FIX");
+					     "ROCKET MPC: NO POSITION FIX");
 			PX4_ERR("NO POSITION FIX at arming");
 		}
 
@@ -516,6 +542,7 @@ void RocketMPC::Run()
 				_launch_alt_captured = true;
 				PX4_INFO("GPS origin (from lpos ref): lat=%.6f lon=%.6f alt=%.1f",
 					 lpos.ref_lat, lpos.ref_lon, (double)lpos.ref_alt);
+
 			} else {
 				// lpos ref not yet available — use param as fallback
 				_actual_launch_alt_msl = _param_launch_alt.get();
@@ -524,10 +551,12 @@ void RocketMPC::Run()
 				PX4_WARN("lpos ref not available at arm — using param launch_alt=%.1f",
 					 (double)_actual_launch_alt_msl);
 			}
+
 		} else {
 			// Real flight: raw GPS origin (independent of EKF2)
 			sensor_gps_s gps{};
 			_sensor_gps_sub.copy(&gps);
+
 			if (gps.fix_type >= sensor_gps_s::FIX_TYPE_3D) {
 				_sensor.set_gps_origin(gps.latitude_deg, gps.longitude_deg, gps.altitude_msl_m);
 				_actual_launch_alt_msl = (float)gps.altitude_msl_m;
@@ -535,15 +564,19 @@ void RocketMPC::Run()
 				PX4_INFO("GPS origin: lat=%.6f lon=%.6f alt=%.1f (launch_alt_msl=%.1f)",
 					 gps.latitude_deg, gps.longitude_deg, gps.altitude_msl_m,
 					 (double)_actual_launch_alt_msl);
+
 			} else {
 				PX4_WARN("No GPS 3D fix at arm — MHE will wait for fix");
 			}
 		}
 
-		// Bearing from heading at arming
+		// Bearing from heading at arming.
+		// Derive bearing from the body-X axis projected onto the NED
+		// horizontal plane — Eulerf::psi() goes unstable as pitch → 90°
+		// (gimbal lock), which for a near-vertical rocket is exactly the
+		// operating regime we need to get right.
 		const Quatf q_arm(att.q[0], att.q[1], att.q[2], att.q[3]);
-		const Eulerf euler_arm(q_arm);
-		const float bearing = euler_arm.psi();
+		const float bearing = _bearing_from_quat(q_arm, /*fallback=*/0.0f);
 		_target_downrange = _param_xtrgt.get();
 		_cos_bearing = cosf(bearing);
 		_sin_bearing = sinf(bearing);
@@ -602,10 +635,12 @@ void RocketMPC::Run()
 					_actual_launch_alt_msl = lpos.ref_alt;
 					_launch_alt_captured = true;
 				}
+
 			} else {
 				// Real flight: raw GPS
 				sensor_gps_s gps{};
 				_sensor_gps_sub.copy(&gps);
+
 				if (gps.fix_type >= sensor_gps_s::FIX_TYPE_3D) {
 					_sensor.set_gps_origin(gps.latitude_deg, gps.longitude_deg, gps.altitude_msl_m);
 					_actual_launch_alt_msl = (float)gps.altitude_msl_m;
@@ -614,8 +649,7 @@ void RocketMPC::Run()
 			}
 
 			const Quatf q_pre(att.q[0], att.q[1], att.q[2], att.q[3]);
-			const Eulerf euler_pre(q_pre);
-			const float bearing = euler_pre.psi();
+			const float bearing = _bearing_from_quat(q_pre, /*fallback=*/atan2f(_sin_bearing, _cos_bearing));
 			_cos_bearing = cosf(bearing);
 			_sin_bearing = sinf(bearing);
 		}
@@ -660,11 +694,29 @@ void RocketMPC::Run()
 			x0_mhe[IX_Q]     = sc.gyro_rad[1];
 			x0_mhe[IX_R]     = sc.gyro_rad[2];
 			x0_mhe[IX_PHI]   = euler0.phi();
-			// Position: in SITL/HITL lpos is relative to EKF2 origin, not arm origin.
-			// Use _arm_origin so the MHE initial state matches the GPS measurement frame.
-			x0_mhe[IX_H]  = 0.0;
-			x0_mhe[IX_XG] = (double)(_arm_origin_x / X_SCALE);
-			x0_mhe[IX_YG] = (double)(_arm_origin_y / Y_SCALE);
+			// IX_XG / IX_YG must live in the same frame as the GPS measurements
+			// fed to MHE by SensorBridge:
+			//   SITL/HITL (update_from_lpos): _gps_north = lpos.x
+			//       → MHE state is absolute NED from the EKF2 local origin
+			//       → seed with _arm_origin_{x,y} (= lpos.{x,y} at arm)
+			//   Real flight (update_gps): _gps_north = (lat-ref_lat)·M_LAT
+			//       and ref is re-latched to the current GPS fix at arm time,
+			//       so measurements start at 0 at arm
+			//       → seed with 0.0
+			// Previous unconditional use of _arm_origin_{x,y} left a bias
+			// on real-GPS flights whenever the EKF2 local origin did not
+			// coincide with the arming position.
+			x0_mhe[IX_H] = 0.0;
+
+			if (_hitl || _param_sitl_gps.get() == 1) {
+				x0_mhe[IX_XG] = (double)(_arm_origin_x / X_SCALE);
+				x0_mhe[IX_YG] = (double)(_arm_origin_y / Y_SCALE);
+
+			} else {
+				x0_mhe[IX_XG] = 0.0;
+				x0_mhe[IX_YG] = 0.0;
+			}
+
 			// Biases + wind: zero
 			_mhe.init_state(x0_mhe);
 
@@ -730,6 +782,7 @@ void RocketMPC::Run()
 			PX4_INFO("  bearing: cos=%.4f sin=%.4f euler.theta=%.4f",
 				 (double)_cos_bearing, (double)_sin_bearing, (double)euler.theta());
 		}
+
 		// ---- MHE: push measurements & solve ----
 		SensorMeasurement smeas = _sensor.build_measurement(sc, air);
 
@@ -742,7 +795,9 @@ void RocketMPC::Run()
 				// Guard: if tau_servo is misconfigured (=0) or dt is 0, the division
 				// would produce inf or NaN. Clamp tau to a minimum of 0.1 ms.
 				float tau = _mpc.config().tau_servo;
+
 				if (tau < 1e-4f) { tau = 1e-4f; }
+
 				float decay = expf(-dt / tau);
 				_de_act = _de_act * decay + delta_e * (1.0f - decay);
 				_dr_act = _dr_act * decay + delta_r * (1.0f - decay);
@@ -758,7 +813,11 @@ void RocketMPC::Run()
 			float thrust = (float)mpc_p[1];
 
 			const MpcConfig &cfg = _mpc.config();
-			float frac = (t < cfg.burn_time) ? (t / cfg.burn_time) : 1.0f;
+			// Guard against a misconfigured ROCKET_TBURN <= 0 that would
+			// otherwise produce NaN (0/0) and leak into the MHE parameter
+			// vector through Ixx/Iyy/Izz.
+			const float burn_time_safe = (cfg.burn_time > 1e-3f) ? cfg.burn_time : 1e-3f;
+			float frac = (t < burn_time_safe) ? (t / burn_time_safe) : 1.0f;
 			float Ixx = cfg.Ixx_full - frac * (cfg.Ixx_full - cfg.Ixx_dry);
 			float Iyy = cfg.Iyy_full - frac * (cfg.Iyy_full - cfg.Iyy_dry);
 			float Izz = cfg.Izz_full - frac * (cfg.Izz_full - cfg.Izz_dry);
@@ -777,22 +836,30 @@ void RocketMPC::Run()
 		}
 
 		perf_begin(_mhe_perf);
+
 		if (_mhe.solve_count() < 3) {
 			PX4_INFO("MHE update #%d: t=%.3f ready=%d init=%d",
 				 _mhe.solve_count(), (double)t, _mhe.ready(), 1);
 		}
+
 		MheOutput mhe_out = _mhe.update(t);
 		perf_end(_mhe_perf);
 		mhe_solve_ms = mhe_out.solve_time_ms;
+
 		if (_mhe.solve_count() < 3) {
 			PX4_INFO("MHE update done: status=%d quality=%.2f valid=%d",
 				 mhe_out.status, (double)mhe_out.quality, mhe_out.valid);
 		}
+
 		mhe_quality = mhe_out.quality;
 
-		// ---- Publish MHE as vehicle_attitude + vehicle_local_position ----
-		// Once MHE has authority, it replaces EKF2 as the system estimator.
-		// Before that, EKF2 keeps publishing (pre-launch / early flight).
+		// ---- MHE authority gate ----
+		// NOTE: this module does NOT publish vehicle_attitude or
+		// vehicle_local_position — EKF2 remains the system-wide estimator
+		// for those topics (consumed by logger, mavlink, commander, etc.).
+		// MHE state is used here solely to (a) build the MPC state vector
+		// via the cooperative blend further below and (b) populate the
+		// MHE-origin fields inside rocket_gnc_status for telemetry.
 		const float qg_thr = _mpc.config().quality_gate_thr;
 
 		// Finite check on x_hat: MHE's internal guard downgrades quality on
@@ -855,6 +922,7 @@ void RocketMPC::Run()
 
 		// Hermite smoothstep: smooth s-curve from 0 to 1
 		float time_blend = 0.0f;
+
 		if (t > t_blend_start) {
 			float s = (t - t_blend_start) / (t_blend_end - t_blend_start);
 			s = (s < 0.0f) ? 0.0f : ((s > 1.0f) ? 1.0f : s);
@@ -863,6 +931,7 @@ void RocketMPC::Run()
 
 		// Quality gate: scale blend by MHE confidence (0 below qg_thr, full at qg_thr+0.2)
 		float quality_factor = 0.0f;
+
 		if (mhe_authority) {
 			quality_factor = (mhe_out.quality - qg_thr) / 0.2f;
 			quality_factor = (quality_factor < 0.0f) ? 0.0f : ((quality_factor > 1.0f) ? 1.0f : quality_factor);
@@ -876,17 +945,20 @@ void RocketMPC::Run()
 		constexpr float ALT_FADE_LO = 50.0f;
 		// Use EKF2 altitude for fadeout decision (available before MHE)
 		float alt_for_fade = Ym;
+
 		if (blend > 0.01f) {
 			// Once MHE is partially active, use blended altitude for smooth fadeout
 			float mhe_alt = (float)(mhe_out.x_hat[IX_H]) * H_SCALE;
 			alt_for_fade = (1.0f - blend) * Ym + blend * mhe_alt;
 		}
+
 		float alt_factor = (alt_for_fade - ALT_FADE_LO) / (ALT_FADE_HI - ALT_FADE_LO);
 		alt_factor = (alt_factor < 0.0f) ? 0.0f : ((alt_factor > 1.0f) ? 1.0f : alt_factor);
 		blend *= alt_factor;
 
 		// ----- EKF2 fallback states (always computed) -----
 		float ekf_gamma, ekf_chi, ekf_alpha, ekf_beta;
+
 		if (vm > 10.0f) {
 			ekf_gamma = atan2f(-Vym, v_h);
 			ekf_chi   = atan2f(Vzm, Vxm);  // bearing-frame χ (downrange=0), used by MPC state
@@ -896,11 +968,13 @@ void RocketMPC::Run()
 			const float chi_ned_vel = atan2f(lpos.vy, lpos.vx);
 			ekf_beta = -(euler.psi() - chi_ned_vel);
 			ekf_beta = atan2f(sinf(ekf_beta), cosf(ekf_beta));
+
 		} else {
 			ekf_gamma = euler.theta();
 			ekf_chi   = 0.0f;              // bearing-frame (low-V MPC fallback)
 			ekf_beta  = 0.0f;              // match Python: no sideslip when V is near zero
 		}
+
 		ekf_alpha = euler.theta() - ekf_gamma;
 
 		// ----- MHE states (valid when mhe_authority) -----
@@ -942,11 +1016,12 @@ void RocketMPC::Run()
 			_xval.alt_err   = fabsf(mhe_alt - Ym);
 
 			bool diverged = (_xval.gamma_err > XVAL_GAMMA_THRESH)
-				     || (_xval.chi_err   > XVAL_CHI_THRESH)
-				     || (_xval.alt_err   > XVAL_ALT_THRESH);
+					|| (_xval.chi_err   > XVAL_CHI_THRESH)
+					|| (_xval.alt_err   > XVAL_ALT_THRESH);
 
 			if (diverged) {
 				_xval.consec_diverge++;
+
 				if (_xval.consec_diverge == 1) {
 					_xval.diverge_start_t = t;
 				}
@@ -971,11 +1046,14 @@ void RocketMPC::Run()
 					// be used here either — it is in bearing-frame (built from
 					// rotated Vxm/Vzm). Re-derive NED heading from raw lpos vel.
 					float chi_reset_ned;
+
 					if (vm > 10.0f) {
 						chi_reset_ned = atan2f(lpos.vy, lpos.vx);
+
 					} else {
 						chi_reset_ned = euler.psi();
 					}
+
 					x0_reset[IX_CHI]   = (double)chi_reset_ned;
 					x0_reset[IX_P]     = (double)sc.gyro_rad[0];
 					x0_reset[IX_Q]     = (double)sc.gyro_rad[1];
@@ -984,8 +1062,21 @@ void RocketMPC::Run()
 					x0_reset[IX_BETA]  = (double)ekf_beta;
 					x0_reset[IX_PHI]   = (double)phi;
 					x0_reset[IX_H]     = (double)(Ym / H_SCALE);
-					x0_reset[IX_XG]    = (double)(Xm / X_SCALE);
-					x0_reset[IX_YG]    = (double)(Zm / Y_SCALE);
+
+					// IX_XG / IX_YG are NED, not the rotated bearing-frame
+					// (downrange/crossrange). Seeding with Xm/Zm injected a
+					// rotation error equal to the current position magnitude
+					// whenever bearing ≠ 0. Re-derive in the same frame used
+					// at launch init (see frame explanation there).
+					if (_hitl || _param_sitl_gps.get() == 1) {
+						x0_reset[IX_XG] = (double)(lpos.x / X_SCALE);
+						x0_reset[IX_YG] = (double)(lpos.y / Y_SCALE);
+
+					} else {
+						x0_reset[IX_XG] = (double)((lpos.x - _arm_origin_x) / X_SCALE);
+						x0_reset[IX_YG] = (double)((lpos.y - _arm_origin_y) / Y_SCALE);
+					}
+
 					_mhe.reinit_state(x0_reset);
 
 					PX4_WARN("XVAL: MHE reset (diverged %.1fs, gamma_err=%.1f° alt_err=%.0fm)",
@@ -997,16 +1088,19 @@ void RocketMPC::Run()
 					_xval.penalty = 0.0f;
 					_xval.diverge_start_t = 0.0f;
 				}
+
 			} else {
 				// Agreement: decay penalty and reset counter
 				_xval.consec_diverge = 0;
 				_xval.diverge_start_t = 0.0f;
 				_xval.penalty *= 0.9f;  // smooth decay
+
 				if (_xval.penalty < 0.01f) { _xval.penalty = 0.0f; }
 			}
 
 			// Apply cross-validation penalty to blend
 			blend *= (1.0f - _xval.penalty);
+
 		} else {
 			// When MHE not active, decay state
 			_xval.consec_diverge = 0;
@@ -1033,12 +1127,14 @@ void RocketMPC::Run()
 			constexpr float CHI_COHERENCE_THRESH = 0.1745f;  // 10 deg
 			float chi_divergence = fabsf(atan2f(sinf(mhe_chi - ekf_chi), cosf(mhe_chi - ekf_chi)));
 			float chi_blend = blend;
+
 			if (chi_divergence > CHI_COHERENCE_THRESH) {
 				// Scale down chi blend proportionally to divergence
 				float chi_penalty = (chi_divergence - CHI_COHERENCE_THRESH) / 0.3491f;  // 0→1 over 20°
 				chi_penalty = (chi_penalty > 0.7f) ? 0.7f : chi_penalty;
 				chi_blend *= (1.0f - chi_penalty);
 			}
+
 			chi_mpc = (1.0f - chi_blend) * ekf_chi + chi_blend * mhe_chi;
 		}
 
@@ -1046,13 +1142,16 @@ void RocketMPC::Run()
 		if (_mpc.solve_count() < 3) {
 			PX4_INFO("LOS compute: cur_x=%.1f alt=%.1f t=%.3f", (double)cur_x, (double)cur_alt, (double)t);
 		}
+
 		LosResult los = _los.compute(cur_x, cur_y, cur_alt,
 					     _los.gamma_ref_prev(), _los.chi_ref_prev(),
 					     t, dt);
+
 		if (_mpc.solve_count() < 3) {
 			PX4_INFO("LOS done: gamma_ref=%.3f chi_ref=%.3f dx=%.1f",
 				 (double)los.gamma_ref, (double)los.chi_ref, (double)los.dx_to_target);
 		}
+
 		gamma_ref = los.gamma_ref;
 		chi_ref   = los.chi_ref;
 
@@ -1075,6 +1174,7 @@ void RocketMPC::Run()
 				x_mpc[3] = (1.0 - (double)blend) * (double)sc.gyro_rad[0] + (double)blend * mhe_out.x_hat[IX_P];
 				x_mpc[4] = (1.0 - (double)blend) * (double)sc.gyro_rad[1] + (double)blend * mhe_out.x_hat[IX_Q];
 				x_mpc[5] = (1.0 - (double)blend) * (double)sc.gyro_rad[2] + (double)blend * mhe_out.x_hat[IX_R];
+
 			} else {
 				x_mpc[3] = (double)sc.gyro_rad[0];
 				x_mpc[4] = (double)sc.gyro_rad[1];
@@ -1116,53 +1216,53 @@ void RocketMPC::Run()
 
 			if (!skip_solve) {
 
-			if (_mpc.solve_count() < 3) {
-				PX4_INFO("MPC solve #%d: V=%.1f gamma=%.3f x_mpc[0..3]=[%.2f,%.3f,%.3f,%.4f]",
-					 _mpc.solve_count(), (double)V_mpc, (double)gamma_mpc,
-					 x_mpc[0], x_mpc[1], x_mpc[2], x_mpc[3]);
-			}
+				if (_mpc.solve_count() < 3) {
+					PX4_INFO("MPC solve #%d: V=%.1f gamma=%.3f x_mpc[0..3]=[%.2f,%.3f,%.3f,%.4f]",
+						 _mpc.solve_count(), (double)V_mpc, (double)gamma_mpc,
+						 x_mpc[0], x_mpc[1], x_mpc[2], x_mpc[3]);
+				}
 
-			perf_begin(_mpc_perf);
-			MpcSolveResult res = _mpc.solve(x_mpc,
-							gamma_ref, chi_ref, 0.0f,
-							h_ref_scaled, _los.cruise_alt_set(),
-							t, dt, cur_x, cur_alt);
-			perf_end(_mpc_perf);
+				perf_begin(_mpc_perf);
+				MpcSolveResult res = _mpc.solve(x_mpc,
+								gamma_ref, chi_ref, 0.0f,
+								h_ref_scaled, _los.cruise_alt_set(),
+								t, dt, cur_x, cur_alt);
+				perf_end(_mpc_perf);
 
-			if (res.valid) {
-				// Clamp individual deflections to physical servo limit.
-				// NOTE: max_d MUST match the delta_max baked into the acados solver
-				// (see SOLVER_DELTA_MAX_RAD above and m130_ocp_setup.py::delta_max).
-				const float max_d = SOLVER_DELTA_MAX_RAD;
-				delta_e = math::constrain(res.delta_e, -max_d, max_d);
-				delta_r = math::constrain(res.delta_r, -max_d, max_d);
-				delta_a = math::constrain(res.delta_a, -max_d, max_d);
+				if (res.valid) {
+					// Clamp individual deflections to physical servo limit.
+					// NOTE: max_d MUST match the delta_max baked into the acados solver
+					// (see SOLVER_DELTA_MAX_RAD above and m130_ocp_setup.py::delta_max).
+					const float max_d = SOLVER_DELTA_MAX_RAD;
+					delta_e = math::constrain(res.delta_e, -max_d, max_d);
+					delta_r = math::constrain(res.delta_r, -max_d, max_d);
+					delta_a = math::constrain(res.delta_a, -max_d, max_d);
 
-				// Recompute X-fin mixing with clamped values
-				fin[0] = math::constrain(delta_a - delta_e - delta_r, -max_d, max_d);
-				fin[1] = math::constrain(delta_a - delta_e + delta_r, -max_d, max_d);
-				fin[2] = math::constrain(delta_a + delta_e + delta_r, -max_d, max_d);
-				fin[3] = math::constrain(delta_a + delta_e - delta_r, -max_d, max_d);
+					// Recompute X-fin mixing with clamped values
+					fin[0] = math::constrain(delta_a - delta_e - delta_r, -max_d, max_d);
+					fin[1] = math::constrain(delta_a - delta_e + delta_r, -max_d, max_d);
+					fin[2] = math::constrain(delta_a + delta_e + delta_r, -max_d, max_d);
+					fin[3] = math::constrain(delta_a + delta_e - delta_r, -max_d, max_d);
 
-				// Cache for lockstep republish on intermediate ticks
-				_last_fins[0] = fin[0];
-				_last_fins[1] = fin[1];
-				_last_fins[2] = fin[2];
-				_last_fins[3] = fin[3];
-				// Back-solve the actual (de, dr, da) that the CLAMPED fins
-				// implement. When any fin saturates at the second clamp
-				// above, the physical composition diverges from the
-				// commanded (delta_e, delta_r, delta_a). MHE must see what
-				// the fins actually produce, not the pre-mix command —
-				// otherwise delta_*_act drives a biased aero force/moment
-				// model which MHE silently absorbs into alpha or gyro_bias.
-				_last_da = (fin[0] + fin[1] + fin[2] + fin[3]) * 0.25f;
-				_last_de = (-fin[0] - fin[1] + fin[2] + fin[3]) * 0.25f;
-				_last_dr = (-fin[0] + fin[1] + fin[2] - fin[3]) * 0.25f;
-			}
+					// Cache for lockstep republish on intermediate ticks
+					_last_fins[0] = fin[0];
+					_last_fins[1] = fin[1];
+					_last_fins[2] = fin[2];
+					_last_fins[3] = fin[3];
+					// Back-solve the actual (de, dr, da) that the CLAMPED fins
+					// implement. When any fin saturates at the second clamp
+					// above, the physical composition diverges from the
+					// commanded (delta_e, delta_r, delta_a). MHE must see what
+					// the fins actually produce, not the pre-mix command —
+					// otherwise delta_*_act drives a biased aero force/moment
+					// model which MHE silently absorbs into alpha or gyro_bias.
+					_last_da = (fin[0] + fin[1] + fin[2] + fin[3]) * 0.25f;
+					_last_de = (-fin[0] - fin[1] + fin[2] + fin[3]) * 0.25f;
+					_last_dr = (-fin[0] + fin[1] + fin[2] - fin[3]) * 0.25f;
+				}
 
-			mpc_status   = res.status;
-			mpc_solve_ms = res.solve_time_ms;
+				mpc_status   = res.status;
+				mpc_solve_ms = res.solve_time_ms;
 
 			} // !skip_solve
 		}
@@ -1193,8 +1293,11 @@ void RocketMPC::Run()
 
 			for (int i = 0; i < 4; ++i) {
 				float n = fin[i] * inv_max_d;
+
 				if (n >  1.0f) { n =  1.0f; }
+
 				if (n < -1.0f) { n = -1.0f; }
+
 				as.control[i] = n;
 			}
 
@@ -1243,10 +1346,13 @@ void RocketMPC::Run()
 		status.theta            = _mhe_publishing ? _mhe_theta : euler.theta();
 		status.psi              = _mhe_publishing ? _mhe_psi   : euler.psi();
 
-		// Compute alpha_est and gamma_rad for logging
+		// Compute alpha_est and gamma_rad for logging.
+		// γ is positive when climbing. _mhe_vz is NED-down (negative when climbing),
+		// and Vym = lpos.vz is also NED-down. Both branches must negate the down
+		// component so atan2(up_component, horizontal) yields +γ on ascent.
 		float gamma_rad_log = _mhe_publishing
-			? atan2f(-(-_mhe_vz), sqrtf(_mhe_vx * _mhe_vx + _mhe_vy * _mhe_vy))
-			: ((v_h > 1.0f) ? atan2f(-Vym, v_h) : euler.theta());
+				      ? atan2f(-_mhe_vz, sqrtf(_mhe_vx * _mhe_vx + _mhe_vy * _mhe_vy))
+				      : ((v_h > 1.0f) ? atan2f(-Vym, v_h) : euler.theta());
 		float theta_log = _mhe_publishing ? _mhe_theta : euler.theta();
 		status.alpha_est    = theta_log - gamma_rad_log;
 		status.gamma_rad    = gamma_rad_log;
@@ -1309,14 +1415,17 @@ void RocketMPC::Run()
 	// to keep timing CSV aligned with actual control decisions.
 	const hrt_abstime cycle_end = hrt_absolute_time();
 	const float cycle_us = (float)(cycle_end - _cycle_t0);
+
 	if (mpc_solve_ms > 0.0f) {
 		debug_vect_s dbg{};
 		dbg.timestamp = cycle_end;
 		// char[10] name — use plain memcpy on fixed buffer
 		static const char kName[] = "TIMING";
+
 		for (size_t i = 0; i < sizeof(dbg.name); i++) {
 			dbg.name[i] = (i < sizeof(kName) - 1) ? kName[i] : 0;
 		}
+
 		dbg.x = mhe_solve_ms * 1000.0f;   // ms → µs
 		dbg.y = mpc_solve_ms * 1000.0f;   // ms → µs
 		dbg.z = cycle_us;                 // already µs

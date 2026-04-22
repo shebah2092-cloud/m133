@@ -53,12 +53,16 @@ struct MheConfig {
 	float horizon_dt         = 0.02f;
 	float solve_rate_hz      = 50.0f;
 	int   max_consec_fails   = 10;
-	float quality_gate       = 0.3f;
 	int   min_init_meas      = 10;
 	int   startup_ramp_solves = 5;
+	// Note: the MHE solver does not gate on quality itself — gating happens
+	// in RocketMPC via MpcConfig::quality_gate_thr. A stale quality_gate
+	// field used to live here but was never consumed; it was removed to
+	// stop confusing readers into thinking there were two gates.
 };
 
-class MheEstimator {
+class MheEstimator
+{
 public:
 	MheEstimator() = default;
 	~MheEstimator();
@@ -97,7 +101,7 @@ private:
 	float _last_solve_t{-1.0f};
 
 	// Arrival cost
-	double _x_bar[MHE_NX]{};
+	double _x_bar[MHE_NX] {};
 
 	// Sliding window buffers (ring buffer approach)
 	static constexpr int BUF_SIZE = 64;
@@ -112,8 +116,8 @@ private:
 		double p[MHE_NP];
 	};
 
-	MeasEntry  _meas_buf[BUF_SIZE]{};
-	ParamEntry _param_buf[BUF_SIZE]{};
+	MeasEntry  _meas_buf[BUF_SIZE] {};
+	ParamEntry _param_buf[BUF_SIZE] {};
 	int _meas_count{0};
 	int _param_count{0};
 	int _meas_head{0};

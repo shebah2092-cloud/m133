@@ -69,6 +69,7 @@
 using namespace time_literals;
 using matrix::Eulerf;
 using matrix::Quatf;
+using matrix::Dcmf;
 using matrix::Vector3f;
 
 #define MODULE_NAME "rocket_mpc"
@@ -96,6 +97,13 @@ private:
 	// one flight bleeding into the next and to stop the MPC/actuator
 	// pipeline when the vehicle is disarmed.
 	void _reset_flight_state();
+
+	// Extract bearing (heading of body-X projected onto NED horizontal plane)
+	// directly from the quaternion. This is numerically stable near pitch=±90°
+	// where Eulerf::psi() loses meaning (gimbal lock). When body-X is nearly
+	// vertical (|horizontal projection| < 1e-2) the bearing is undefined and
+	// `fallback` is returned instead.
+	static float _bearing_from_quat(const Quatf &q, float fallback);
 
 	// ---------------------------------------------------------------
 	// Sub-systems
@@ -149,7 +157,7 @@ private:
 	bool  _hitl{false};  // HITL mode: use lpos reference frame for MHE (avoid GPS origin mismatch)
 
 	// Cached fin commands for lockstep republish
-	float _last_fins[4]{0.0f, 0.0f, 0.0f, 0.0f};
+	float _last_fins[4] {0.0f, 0.0f, 0.0f, 0.0f};
 	float _last_de{0.0f}, _last_dr{0.0f}, _last_da{0.0f};
 	hrt_abstime _last_mpc_solve_time{0};
 

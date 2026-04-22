@@ -26,16 +26,19 @@ struct SensorMeasurement {
 	bool valid;
 };
 
-class SensorBridge {
+class SensorBridge
+{
 public:
 	SensorBridge() = default;
 
-	void set_launch_alt(float launch_alt_m) {
+	void set_launch_alt(float launch_alt_m)
+	{
 		_launch_alt_m = launch_alt_m;
 	}
 
 	/** Set GPS reference origin in WGS84 (call at arm / pre-launch) */
-	void set_gps_origin(double lat_deg, double lon_deg, double alt_msl_m) {
+	void set_gps_origin(double lat_deg, double lon_deg, double alt_msl_m)
+	{
 		_ref_lat_deg = lat_deg;
 		_ref_lon_deg = lon_deg;
 		_ref_alt_msl = alt_msl_m;
@@ -60,12 +63,9 @@ public:
 	double ref_alt_msl() const { return _ref_alt_msl; }
 	bool   gps_origin_set() const { return _gps_origin_set; }
 	bool   gps_valid() const { return _gps_valid; }
-
-	/** True when last GPS update is newer than GPS_STALE_TIMEOUT_US. */
-	bool   gps_fresh(hrt_abstime now) const {
-		return _gps_valid && _last_gps_update_us > 0
-		       && (now - _last_gps_update_us) < GPS_STALE_TIMEOUT_US;
-	}
+	// Staleness is handled internally by build_measurement(): once a sample
+	// is older than GPS_STALE_TIMEOUT_US it drops _gps_valid and the caller
+	// sees .valid==false on the next measurement.
 
 	hrt_abstime last_gps_update_us() const { return _last_gps_update_us; }
 
