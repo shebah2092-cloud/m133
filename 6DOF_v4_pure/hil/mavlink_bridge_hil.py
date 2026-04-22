@@ -1599,10 +1599,43 @@ class HILBridge:
               f"max_std={spread_deg:.3f}°)")
 
     def _handle_debug_float_array(self, payload: bytes):
-        """يعالج SRV_FB (array_id=1) من درايفر xqpower_can."""
+        """يعالج SRV_FB (array_id=1) من درايفر xqpower_can، و
+        RktGNC (array_id=2) من rocket_mpc — يحوي حقول التوقيت (µs)
+        كمصدر أساسي بدلاً من DEBUG_VECT("TIMING") الذي أُزيل لتفادي
+        الاصطدام مع mavlink_receiver."""
         p = parse_debug_float_array(payload)
         if p is None:
             return
+
+        # RktGNC (array_id=2): حقول التوقيت في slots [46..48]
+        #   data[46] = mhe_solve_us
+        #   data[47] = mpc_solve_us
+        #   data[48] = cycle_us
+        # هذه القيم تصل بمعدل 20 Hz في MAVLINK_MODE_ROCKET، كافية
+        # لتتبُّع تشغيل الحلّ لكن ليست بتفاصيل الـDEBUG_VECT السابق.
+        if p["array_id"] == 2 and p["name"].upper().startswith("RKTGNC"):
+            data = p["data"]
+            try:
+                mhe_us = float(data[46])
+                mpc_us = float(data[47])
+                cycle_us = float(data[48])
+            except (IndexError, TypeError, ValueError):
+                return
+
+            # نتجاهل العيّنات التي تكون كل حقولها صفراً (لم يحصل solve بعد)
+            if mhe_us == 0.0 and mpc_us == 0.0 and cycle_us == 0.0:
+                return
+
+            with self._timing_lock:
+                self._last_timing["mhe_us"] = mhe_us
+                self._last_timing["mpc_us"] = mpc_us
+                self._last_timing["cycle_us"] = cycle_us
+                self.timing["t_sim"].append(self._sim_t_us / 1e6)
+                self.timing["mhe_us"].append(mhe_us)
+                self.timing["mpc_us"].append(mpc_us)
+                self.timing["cycle_us"].append(cycle_us)
+            return
+
         # الاصطلاح: array_id=1, name="SRV_FB"
         if p["array_id"] != 1 or not p["name"].upper().startswith("SRV_FB"):
             return
