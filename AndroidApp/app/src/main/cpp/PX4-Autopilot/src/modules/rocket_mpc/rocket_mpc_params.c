@@ -75,7 +75,7 @@ PARAM_DEFINE_FLOAT(ROCKET_T_CTRL, 0.5f);
  * @decimal 0
  * @group Rocket MPC
  */
-PARAM_DEFINE_FLOAT(ROCKET_XTRGT, 3000.0f);
+PARAM_DEFINE_FLOAT(ROCKET_XTRGT, 2600.0f);
 
 /**
  * Target crossrange offset
