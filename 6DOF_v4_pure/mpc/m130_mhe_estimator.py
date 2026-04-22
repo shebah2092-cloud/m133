@@ -55,7 +55,7 @@ class MheEstimator:
         from m130_mhe_ocp_setup import create_m130_mhe_solver
 
         mhe_cfg = estimation_cfg.get("mhe", {})
-        self._N = int(mhe_cfg.get("horizon_steps", 25))
+        self._N = int(mhe_cfg.get("horizon_steps", 20))
         self._dt = float(mhe_cfg.get("horizon_dt", 0.02))
         self._solve_rate_hz = float(mhe_cfg.get("solve_rate_hz", 50.0))
         self._solve_period = 1.0 / self._solve_rate_hz
