@@ -177,6 +177,26 @@ private:
 	float _last_de{0.0f}, _last_dr{0.0f}, _last_da{0.0f};
 	hrt_abstime _last_mpc_solve_time{0};
 
+	// ── Per-fin saturation-clamp telemetry ──
+	// The acados solver's polytopic constraint limits the MIXED fins only on
+	// the *actual* servo state (delta_*_act in x[15..17]). The published fin
+	// command, however, is derived from the *commanded* servo state
+	// (delta_*_s from x[12..14]), which has only individual ±delta_max box
+	// bounds — no polytopic coupling. So during aggressive transients, the
+	// mixed value (delta_a ± delta_e ± delta_r) can legally exceed delta_max
+	// even when every virtual channel is in-box and the solver succeeded.
+	//
+	// The per-fin math::constrain() in RocketMPC.cpp is therefore NOT just a
+	// safety net for SQP_RTI failures — it is the actual enforcement of the
+	// polytopic fin-mix bound on the commanded path. These counters measure
+	// how often that enforcement actually fires; a persistently non-zero
+	// rate is diagnostic and argues for adding polytopic on delta_*_s in
+	// m130_ocp_setup.py (requires regenerating the solver).
+	uint32_t _fin_clamp_count[4] {};   // per-fin activation count
+	uint32_t _fin_clamp_any{0};        // solves with >=1 fin clamped
+	uint32_t _fin_clamp_solves{0};     // valid-solve denominator
+	uint32_t _fin_clamp_report_at{0};  // next solve index at which to print
+
 	// Tracked actual fin deflections (first-order lag filter)
 	float _de_act{0.0f}, _dr_act{0.0f}, _da_act{0.0f};
 
