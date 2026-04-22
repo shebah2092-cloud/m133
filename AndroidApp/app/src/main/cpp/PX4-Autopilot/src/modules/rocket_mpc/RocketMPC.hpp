@@ -58,7 +58,10 @@
 #include <uORB/topics/actuator_servos.h>
 #include <uORB/topics/rocket_gnc_status.h>
 #include <uORB/topics/debug_array.h>
-#include <uORB/topics/debug_vect.h>
+// NOTE: debug_vect is no longer used by this module. Cycle timing moved
+// to rocket_gnc_status.{mhe_solve_us, mpc_solve_us, cycle_us} to avoid
+// the shared debug_vect uORB instance colliding with mavlink_receiver's
+// inbound DEBUG_VECT republishing.
 #include <systemlib/mavlink_log.h>
 
 #include "mpc_controller.h"
@@ -137,8 +140,17 @@ private:
 	uORB::Publication<actuator_outputs_s>  _actuator_outputs_sim_pub{ORB_ID(actuator_outputs_sim)};
 	uORB::Publication<actuator_servos_s>   _actuator_servos_pub{ORB_ID(actuator_servos)};
 	uORB::Publication<rocket_gnc_status_s> _rocket_gnc_status_pub{ORB_ID(rocket_gnc_status)};
-	uORB::Publication<debug_vect_s>        _timing_debug_pub{ORB_ID(debug_vect)};
 
+
+	// ---------------------------------------------------------------
+	// Cycle-timing snapshot (populated once per Run(), consumed by the
+	// rocket_gnc_status publisher below). Replaces the former debug_vect
+	// "TIMING" publication: a dedicated snapshot inside our own topic is
+	// immune to mavlink_receiver's inbound DEBUG_VECT injection and is
+	// logged by default without requiring add_debug_topics().
+	uint32_t _mhe_solve_us{0};
+	uint32_t _mpc_solve_us{0};
+	uint32_t _cycle_us{0};
 
 	// ---------------------------------------------------------------
 	// State variables
@@ -176,6 +188,27 @@ private:
 	float _last_fins[4] {0.0f, 0.0f, 0.0f, 0.0f};
 	float _last_de{0.0f}, _last_dr{0.0f}, _last_da{0.0f};
 	hrt_abstime _last_mpc_solve_time{0};
+
+	// ── Cumulative per-flight event counters (surfaced in rocket_gnc_status
+	//    so transient events are not lost between MAVLink DEBUG_FLOAT_ARRAY
+	//    samples, which fire at 20 Hz vs. the 100 Hz+ publish rate.) All
+	//    reset in _reset_flight_state.
+	uint32_t _mpc_fail_count{0};
+	uint32_t _mpc_nan_skip_count{0};
+	uint32_t _mhe_fail_count{0};
+	uint32_t _fin_clamp_total{0};     // solves where any fin clamped (edge counter)
+	uint32_t _xval_reset_count{0};
+	uint32_t _servo_offline_events{0};
+
+	// Last servo online mask observed from xqpower_can feedback (SRV_FB),
+	// used to detect online→offline edge transitions for telemetry.
+	uint8_t _prev_servo_online_mask{0};
+	bool    _prev_servo_mask_valid{false};
+
+	// Latched GPS quality snapshot (mirrored into rocket_gnc_status).
+	uint8_t _gps_fix_type{0};
+	uint8_t _gps_sats_used{0};
+	uint8_t _gps_jamming_state{0};
 
 	// ── Per-fin saturation-clamp telemetry ──
 	// The acados solver's polytopic constraint limits the MIXED fins only on

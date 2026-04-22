@@ -56,6 +56,7 @@ MSG_HIL_STATE_QUATERNION = 115
 MSG_HIL_ACTUATOR_CONTROLS = 93
 MSG_NAMED_VALUE_FLOAT = 251
 MSG_DEBUG_VECT = 250
+MSG_DEBUG_FLOAT_ARRAY = 350  # RktGNC (array_id=2) من rocket_mpc
 
 CRC_HEARTBEAT = 50
 CRC_HIL_SENSOR = 108
@@ -256,6 +257,32 @@ def parse_debug_vect(payload: bytes) -> Optional[dict]:
         t_us, x, y, z = struct.unpack("<Qfff", payload[:20])
         name = payload[20:30].rstrip(b"\x00").decode("ascii", "replace")
         return {"t_us": t_us, "name": name, "x": float(x), "y": float(y), "z": float(z)}
+    except (struct.error, UnicodeDecodeError):
+        return None
+
+
+def parse_debug_float_array(payload: bytes) -> Optional[dict]:
+    """DEBUG_FLOAT_ARRAY (msg 350):
+        time_usec(u64) + array_id(u16) + name[10] + data[58](f32 extension)
+    الحجم الكامل = 252 بايت. MAVLink v2 يحذف الأصفار اللاحقة.
+
+    rocket_mpc يبثّ array_id=2 name="RktGNC". حقول التوقيت في:
+        data[46] = mhe_solve_us
+        data[47] = mpc_solve_us
+        data[48] = cycle_us
+    """
+    FULL = 252
+    if len(payload) < 8:
+        return None
+    if len(payload) < FULL:
+        payload = payload + b"\x00" * (FULL - len(payload))
+    try:
+        t_us = struct.unpack("<Q", payload[:8])[0]
+        array_id = struct.unpack("<H", payload[8:10])[0]
+        name = payload[10:20].rstrip(b"\x00").decode("ascii", "replace")
+        data = list(struct.unpack("<58f", payload[20:20 + 232]))
+        return {"t_us": int(t_us), "array_id": int(array_id),
+                "name": name, "data": data}
     except (struct.error, UnicodeDecodeError):
         return None
 
@@ -534,7 +561,33 @@ class PILBridge:
                 total_rx += len(data)
                 for msg_id, payload in parser.feed(data):
                     msg_counts[msg_id] = msg_counts.get(msg_id, 0) + 1
-                    if msg_id == MSG_DEBUG_VECT:
+                    if msg_id == MSG_DEBUG_FLOAT_ARRAY:
+                        # RktGNC (array_id=2, name="RktGNC") — المصدر الأساسي
+                        # للتوقيت بعد حذف debug_vect TIMING من rocket_mpc
+                        # (لتفادي الاصطدام مع mavlink_receiver).
+                        p = parse_debug_float_array(payload)
+                        if (p and p["array_id"] == 2
+                                and p["name"].upper().startswith("RKTGNC")):
+                            data_arr = p["data"]
+                            try:
+                                mhe_us = float(data_arr[46])
+                                mpc_us = float(data_arr[47])
+                                cycle_us = float(data_arr[48])
+                            except (IndexError, TypeError, ValueError):
+                                continue
+                            if mhe_us == 0.0 and mpc_us == 0.0 and cycle_us == 0.0:
+                                continue
+                            with self._timing_lock:
+                                self._last_timing["mhe_us"] = mhe_us
+                                self._last_timing["mpc_us"] = mpc_us
+                                self._last_timing["cycle_us"] = cycle_us
+                                self.timing["t_sim"].append(self._sim_t_us / 1e6)
+                                self.timing["mhe_us"].append(mhe_us)
+                                self.timing["mpc_us"].append(mpc_us)
+                                self.timing["cycle_us"].append(cycle_us)
+                    elif msg_id == MSG_DEBUG_VECT:
+                        # احتياط خلفي: نبقي القراءة لتوافق مع أي بنية ثابتة
+                        # (firmware قديم لا يزال يبث TIMING).
                         p = parse_debug_vect(payload)
                         if p and p["name"].upper().startswith("TIMING"):
                             with self._timing_lock:

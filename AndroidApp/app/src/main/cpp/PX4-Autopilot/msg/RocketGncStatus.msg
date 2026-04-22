@@ -95,3 +95,29 @@ bool launched                    # True after launch detection
 float32 dt_actual                # [s] Measured control loop dt this cycle
 float32 dt_min                   # [s] Minimum dt seen since launch
 float32 dt_max                   # [s] Maximum dt seen since launch
+
+# --- Cycle timing (microsecond precision, replaces DEBUG_VECT("TIMING")) ---
+# Retained in-topic (instead of a shared debug_vect publication) so that
+# mavlink_receiver's inbound DEBUG_VECT injection cannot corrupt the signal
+# and so that logger picks these up without add_debug_topics enabled.
+uint32 mhe_solve_us              # [us] Last MHE solve wall-clock time
+uint32 mpc_solve_us              # [us] Last MPC solve wall-clock time
+uint32 cycle_us                  # [us] Full Run() cycle wall-clock time
+
+# --- Cumulative event counters (per-flight, reset on _reset_flight_state) ---
+# Cover the 20 Hz MAVLink aliasing of a 100 Hz+ publish rate: transient
+# events that would otherwise fall between telemetry samples are preserved
+# as monotonic counters.
+uint32 mpc_fail_count            # MPC solves with non-zero acados status (excl. skipped-on-NaN)
+uint32 mpc_nan_skip_count        # MPC solves skipped because x0 contained NaN
+uint32 mhe_fail_count            # MHE solves that failed quality gate or returned invalid
+uint32 fin_clamp_count           # Valid solves where ≥1 fin hit the polytopic mix bound
+uint32 xval_reset_count          # Cross-validation-driven MHE reinit events
+uint32 servo_offline_events      # Transitions of any servo from online→offline
+
+# --- GPS quality snapshot (as seen by MHE's raw sensor_gps feed) ---
+# Mirrors sensor_gps so a ground operator can spot degraded fix without
+# having to subscribe to a separate topic over MAVLink.
+uint8  gps_fix_type              # 0=no fix .. 3=3D, 4=DGPS, 5/6=RTK
+uint8  gps_satellites_used       # SVs used in solution
+uint8  gps_jamming_state         # 0=unknown 1=ok 2=warn 3=critical

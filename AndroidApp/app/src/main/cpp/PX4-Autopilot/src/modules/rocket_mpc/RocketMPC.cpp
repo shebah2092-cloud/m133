@@ -50,6 +50,7 @@
 #include <mathlib/mathlib.h>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <sched.h>
 #include <unistd.h>
@@ -136,7 +137,6 @@ RocketMPC::RocketMPC() :
 	_actuator_outputs_sim_pub.advertise();
 	_actuator_servos_pub.advertise();
 	_rocket_gnc_status_pub.advertise();
-	_timing_debug_pub.advertise();
 
 	parameters_update(true);
 }
@@ -391,6 +391,25 @@ void RocketMPC::_reset_flight_state()
 	_fin_clamp_solves = 0;
 	_fin_clamp_report_at = 0;
 
+	// Per-flight event counters surfaced in rocket_gnc_status. Cleared on
+	// the same arm/disarm boundary as _fin_clamp_* so telemetry reflects
+	// only the current flight's health, not bleed-through from previous
+	// flights on the bench.
+	_mpc_fail_count = 0;
+	_mpc_nan_skip_count = 0;
+	_mhe_fail_count = 0;
+	_fin_clamp_total = 0;
+	_xval_reset_count = 0;
+	_servo_offline_events = 0;
+	_prev_servo_online_mask = 0;
+	_prev_servo_mask_valid = false;
+	_gps_fix_type = 0;
+	_gps_sats_used = 0;
+	_gps_jamming_state = 0;
+	_mhe_solve_us = 0;
+	_mpc_solve_us = 0;
+	_cycle_us = 0;
+
 	// MPC state & diagnostics snapshot
 	memset(_last_x_mpc, 0, sizeof(_last_x_mpc));
 	_have_x_mpc = false;
@@ -555,8 +574,19 @@ void RocketMPC::Run()
 		// Real flight: raw GPS for independent MHE position measurements
 		sensor_gps_s gps{};
 
-		if (_sensor_gps_sub.copy(&gps) && gps.fix_type >= sensor_gps_s::FIX_TYPE_3D) {
-			_sensor.update_gps(gps);
+		if (_sensor_gps_sub.copy(&gps)) {
+			if (gps.fix_type >= sensor_gps_s::FIX_TYPE_3D) {
+				_sensor.update_gps(gps);
+			}
+
+			// Snapshot GPS quality into the telemetry cache regardless of
+			// fix quality so degraded fixes show up in rocket_gnc_status
+			// rather than silently locking MHE out. EKF2 remains the
+			// system-wide fix-quality source; this mirror is for the
+			// raw feed that MHE actually consumes.
+			_gps_fix_type      = gps.fix_type;
+			_gps_sats_used     = gps.satellites_used;
+			_gps_jamming_state = gps.jamming_state;
 		}
 	}
 
@@ -1021,6 +1051,22 @@ void RocketMPC::Run()
 		_last_mhe_status = mhe_out.status;
 		_last_mhe_valid  = mhe_authority;
 
+		// Count MHE solves that either returned invalid from acados or
+		// produced a finite result below the quality gate. We gate on
+		// mhe_out.solve_time_ms > 0 so we don't increment when MHE's
+		// internal rate-limiter skipped the tick (that isn't a failure).
+		if (mhe_out.solve_time_ms > 0.0f && !mhe_authority) {
+			if (_mhe_fail_count == 0) {
+				mavlink_log_critical(&_mavlink_log_pub,
+						     "MHE degraded (status=%d quality=%.2f valid=%d)\t",
+						     mhe_out.status,
+						     (double)mhe_out.quality,
+						     mhe_out.valid ? 1 : 0);
+			}
+
+			_mhe_fail_count++;
+		}
+
 		// NOTE on _mhe_publishing:
 		//   This flag is reset to its final per-cycle value near the end of the
 		//   loop, after the cooperative blend has been computed.  We used to
@@ -1236,10 +1282,21 @@ void RocketMPC::Run()
 
 					_mhe.reinit_state(x0_reset);
 
+					_xval_reset_count++;
+
 					PX4_WARN("XVAL: MHE reset (diverged %.1fs, gamma_err=%.1f° alt_err=%.0fm)",
 						 (double)(t - _xval.diverge_start_t),
 						 (double)(_xval.gamma_err * 57.2958f),
 						 (double)_xval.alt_err);
+
+					// Surface divergence on MAVLink so a ground operator sees the
+					// event in real-time (PX4_WARN lands only in nsh/console). The
+					// counter above is what the 20 Hz DEBUG_FLOAT_ARRAY stream carries,
+					// but a textual STATUSTEXT makes the first occurrence undeniable.
+					mavlink_log_critical(&_mavlink_log_pub,
+							     "MHE reset (XVAL): gamma_err=%.1f° alt_err=%.0fm\t",
+							     (double)(_xval.gamma_err * 57.2958f),
+							     (double)_xval.alt_err);
 
 					_xval.consec_diverge = 0;
 					_xval.penalty = 0.0f;
@@ -1380,6 +1437,14 @@ void RocketMPC::Run()
 
 				if (!x_finite) {
 					PX4_ERR("MPC state NaN at t=%.2f — skipping solve", (double)t);
+
+					if (_mpc_nan_skip_count == 0) {
+						mavlink_log_critical(&_mavlink_log_pub,
+								     "MPC state NaN at t=%.2f — solve skipped\t",
+								     (double)t);
+					}
+
+					_mpc_nan_skip_count++;
 					skip_solve = true;
 				}
 			}
@@ -1442,7 +1507,7 @@ void RocketMPC::Run()
 
 					_fin_clamp_solves++;
 
-					if (any_clamped) { _fin_clamp_any++; }
+					if (any_clamped) { _fin_clamp_any++; _fin_clamp_total++; }
 
 					// Periodic summary: every 500 valid solves (~10 s @ 50Hz).
 					// Only emit if the clamp actually fired since last report,
@@ -1482,6 +1547,21 @@ void RocketMPC::Run()
 				// Snapshot MPC diagnostics for telemetry
 				_last_mpc_status   = res.status;
 				_last_mpc_sqp_iter = (uint32_t)((res.sqp_iter > 0) ? res.sqp_iter : 0);
+
+				// Count non-zero acados statuses separately from NaN skips. A
+				// persistent non-zero rate here is the canonical red-flag for a
+				// poorly-conditioned problem (bad warm-start, infeasible bounds,
+				// QP solver stall). Emit a one-shot mavlink warning so ground sees
+				// the first bad solve without having to decode DEBUG_FLOAT_ARRAY.
+				if (res.status != 0) {
+					if (_mpc_fail_count == 0) {
+						mavlink_log_critical(&_mavlink_log_pub,
+								     "MPC solve failed (status=%d sqp_iter=%d)\t",
+								     res.status, res.sqp_iter);
+					}
+
+					_mpc_fail_count++;
+				}
 
 			} // !skip_solve
 		}
@@ -1534,6 +1614,15 @@ void RocketMPC::Run()
 		// and logs the model trace on its side — PX4 does not emit a
 		// synthetic copy, keeping id=1 a single source of truth.
 	}
+
+	// Snapshot cycle-timing in microseconds BEFORE status publish so the
+	// per-cycle numbers ride the same topic sample as the rest of the state.
+	// We intentionally measure from _cycle_t0 (first action inside Run())
+	// to this point (just before status.publish) so the number reflects
+	// everything this module did this tick, not only the solver phase.
+	_mhe_solve_us = (uint32_t)(mhe_solve_ms * 1000.0f);
+	_mpc_solve_us = (uint32_t)(mpc_solve_ms * 1000.0f);
+	_cycle_us     = (uint32_t)(hrt_absolute_time() - _cycle_t0);
 
 	// ---- Publish status (reuse rocket_gnc_status topic) ----
 	{
@@ -1610,12 +1699,64 @@ void RocketMPC::Run()
 
 		// Servo mask — only trust fresh readings (< 500 ms old) so a
 		// dead xqpower_can driver doesn't leave a stale mask in telemetry.
+		// We filter on BOTH id==1 AND name starts with "SRV_FB" because
+		// mavlink_receiver republishes any inbound DEBUG_FLOAT_ARRAY onto
+		// the same uORB topic; an external sender could pick id=1 by
+		// accident and corrupt the mask. The name check pins the source
+		// to the xqpower_can driver (see drivers/xqpower_can/XqpowerCan.cpp
+		// where dbg.name="SRV_FB" is set).
 		debug_array_s dbg_srv{};
+		uint8_t observed_mask = 0;
+		bool mask_observed = false;
 
 		if (_debug_array_sub.copy(&dbg_srv) && dbg_srv.id == 1
-		    && (now - dbg_srv.timestamp) < 500_ms) {
-			status.servo_online_mask = (uint8_t)dbg_srv.data[12];
+		    && (now - dbg_srv.timestamp) < 500_ms
+		    && strncmp(dbg_srv.name, "SRV_FB", 6) == 0) {
+			observed_mask = (uint8_t)dbg_srv.data[12];
+			mask_observed = true;
+			status.servo_online_mask = observed_mask;
 		}
+
+		// Edge-detect servo online→offline transitions so a ground operator
+		// sees a flap without having to diff consecutive telemetry frames.
+		// We only count cleared bits (a bit that was 1 and is now 0). Any
+		// newly-set bit is a re-attach and shouldn't count as an event.
+		if (mask_observed) {
+			if (_prev_servo_mask_valid) {
+				const uint8_t cleared = (uint8_t)(_prev_servo_online_mask & ~observed_mask);
+
+				if (cleared != 0) {
+					_servo_offline_events++;
+
+					mavlink_log_critical(&_mavlink_log_pub,
+							     "Servo offline: mask 0x%02X -> 0x%02X (cleared=0x%02X)\t",
+							     _prev_servo_online_mask,
+							     observed_mask,
+							     cleared);
+				}
+			}
+
+			_prev_servo_online_mask = observed_mask;
+			_prev_servo_mask_valid = true;
+		}
+
+		// --- Cycle-timing snapshot (replaces debug_vect TIMING publication) ---
+		status.mhe_solve_us = _mhe_solve_us;
+		status.mpc_solve_us = _mpc_solve_us;
+		status.cycle_us     = _cycle_us;
+
+		// --- Cumulative event counters ---
+		status.mpc_fail_count       = _mpc_fail_count;
+		status.mpc_nan_skip_count   = _mpc_nan_skip_count;
+		status.mhe_fail_count       = _mhe_fail_count;
+		status.fin_clamp_count      = _fin_clamp_total;
+		status.xval_reset_count     = _xval_reset_count;
+		status.servo_offline_events = _servo_offline_events;
+
+		// --- GPS quality snapshot (raw MHE feed) ---
+		status.gps_fix_type        = _gps_fix_type;
+		status.gps_satellites_used = _gps_sats_used;
+		status.gps_jamming_state   = _gps_jamming_state;
 
 		_rocket_gnc_status_pub.publish(status);
 	}
@@ -1646,30 +1787,14 @@ void RocketMPC::Run()
 		}
 	}
 
-	// ---- Publish DEBUG_VECT("TIMING") for PIL instrumentation ----
-	// Forwarded over MAVLink as DEBUG_VECT (msg 250) to pil_runner.
-	//   x = mhe_us, y = mpc_us, z = total cycle_us
-	// Only emitted on cycles where MPC/MHE actually ran (mpc_solve_ms > 0),
-	// to keep timing CSV aligned with actual control decisions.
-	const hrt_abstime cycle_end = hrt_absolute_time();
-	const float cycle_us = (float)(cycle_end - _cycle_t0);
-
-	if (mpc_solve_ms > 0.0f) {
-		debug_vect_s dbg{};
-		dbg.timestamp = cycle_end;
-		// char[10] name — use plain memcpy on fixed buffer
-		static const char kName[] = "TIMING";
-
-		for (size_t i = 0; i < sizeof(dbg.name); i++) {
-			dbg.name[i] = (i < sizeof(kName) - 1) ? kName[i] : 0;
-		}
-
-		dbg.x = mhe_solve_ms * 1000.0f;   // ms → µs
-		dbg.y = mpc_solve_ms * 1000.0f;   // ms → µs
-		dbg.z = cycle_us;                 // already µs
-		_timing_debug_pub.publish(dbg);
-	}
-
+	// Cycle-timing previously published here as debug_vect("TIMING") has
+	// moved into rocket_gnc_status.{mhe_solve_us, mpc_solve_us, cycle_us}
+	// (see snapshot just before the status publish). The dedicated topic
+	// eliminates the collision risk that mavlink_receiver's inbound
+	// DEBUG_VECT injection would otherwise pose on the shared debug_vect
+	// uORB instance, and guarantees the values are logged by default
+	// without requiring add_debug_topics(). Ground-side consumers should
+	// read these fields from DEBUG_FLOAT_ARRAY array_id=2 ("RktGNC").
 	perf_end(_loop_perf);
 }
 
