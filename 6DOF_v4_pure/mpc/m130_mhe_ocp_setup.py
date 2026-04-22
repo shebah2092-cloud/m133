@@ -216,7 +216,15 @@ def create_m130_mhe_ocp(estimation_cfg=None) -> AcadosOcp:
     # (acados MHE pattern: do NOT set ocp.constraints.x0)
 
     # Default parameters: [delta_e, delta_r, delta_a, mass, thrust, Ixx, Iyy, Izz, launch_alt]
-    ocp.parameter_values = np.array([0.0, 0.0, 0.0, 12.74, 600.0, 0.0373, 1.1220, 1.1220, 1200.0])
+    # Inertias and mass match data/rocket_models/Qabthah1/rocket_properties.yaml
+    # (full-mass column — MHE starts at launch, then interpolates toward the dry
+    # values inside the symbolic model as mass is estimated downward). The
+    # thrust default (893.5 N) matches the plateau thrust derived from the
+    # Qabthah1 thrust_curve.csv and the ROCKET_THRUST auto-derivation formula
+    # (impulse / (burn_time − 0.75·t_tail)). Overridden on every solve by the
+    # estimator, so these values only seed the very first linearisation.
+    ocp.parameter_values = np.array([0.0, 0.0, 0.0, 12.74, 893.5,
+                                     0.0389, 1.1651, 1.166, 1200.0])
 
     # Solver options
     ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
