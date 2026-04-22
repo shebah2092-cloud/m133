@@ -113,7 +113,10 @@ SensorMeasurement SensorBridge::build_measurement(
 	// Unlike GPS (which gates m.valid and blocks the entire measurement),
 	// stale baro only sets m.baro_valid=false so the caller can warn/log.
 	// The measurement is still pushed — losing baro alone should not
-	// discard the valuable IMU+GPS data in y[0..5] and y[7..12].
+	// discard the valuable IMU+GPS data in y[0..5] and y[7..12]. The stale
+	// y[6] slot is filled with GPS altitude MSL below so the MHE baro model
+	// (y[6] = h*H_SCALE + launch_alt) sees a sane residual instead of a
+	// frozen value pulling the h-state toward the last pre-failure altitude.
 	if (_baro_valid && _last_baro_update_us > 0
 	    && (now - _last_baro_update_us) > BARO_STALE_TIMEOUT_US) {
 		_baro_valid = false;
@@ -132,8 +135,16 @@ SensorMeasurement SensorBridge::build_measurement(
 	m.y[4] = (double)sc.accelerometer_m_s2[1];
 	m.y[5] = (double)sc.accelerometer_m_s2[2];
 
-	// Barometric altitude (m) — raw from baro
-	m.y[6] = (double)air.baro_alt_meter;
+	// Barometric altitude (m). When baro is fresh use the raw reading; when
+	// stale fall back to GPS altitude MSL (already in the same frame as the
+	// MHE baro measurement model). The caller-side gate on m.valid ensures
+	// this fallback is only reached when _gps_valid is true (otherwise the
+	// whole measurement is dropped), so _gps_alt_msl is guaranteed fresh
+	// within GPS_STALE_TIMEOUT_US. Without this fallback the last pre-
+	// failure baro reading would stay frozen on y[6] and pull MHE's h-state
+	// toward the failure altitude, producing large altitude errors if the
+	// rocket keeps climbing or descends after baro failure.
+	m.y[6] = _baro_valid ? (double)air.baro_alt_meter : _gps_alt_msl;
 
 	// GPS position relative to arm origin (local NED, meters)
 	m.y[7]  = _gps_north;
