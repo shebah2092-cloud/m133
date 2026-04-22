@@ -105,6 +105,12 @@ private:
 	// `fallback` is returned instead.
 	static float _bearing_from_quat(const Quatf &q, float fallback);
 
+	// Extract launch pitch (elevation of body-X above the NED horizontal
+	// plane) directly from the DCM column of the quaternion.  Numerically
+	// stable through pitch = ±90° (gimbal lock), which is exactly where
+	// a near-vertical rocket operates; Eulerf::theta() is not.
+	static float _pitch_from_quat(const Quatf &q);
+
 	// ---------------------------------------------------------------
 	// Sub-systems
 	// ---------------------------------------------------------------
@@ -150,9 +156,19 @@ private:
 	float _sin_bearing{0.0f};
 	float _target_downrange{0.0f};
 
-	// Actual launch altitude MSL captured at arming (replaces hardcoded param for MHE)
+	// Launch-time state captured from sensors at arming (replaces the old
+	// ROCKET_L_ALT / ROCKET_L_PITCH params, which were error-prone user
+	// inputs that had to be updated by hand for every flight):
+	//   _actual_launch_alt_msl — MSL altitude, from GPS (arm / pre-launch)
+	//                            or baro (launch-detection fallback)
+	//   _actual_launch_pitch_rad — body-X elevation above horizon (rail
+	//                              angle), from attitude at arm + every
+	//                              pre-launch cycle, used to recompute
+	//                              gamma_natural for LOS feedforward
 	float _actual_launch_alt_msl{0.0f};
 	bool  _launch_alt_captured{false};
+	float _actual_launch_pitch_rad{0.0f};
+	bool  _launch_pitch_captured{false};
 
 	bool  _hitl{false};  // HITL mode: use lpos reference frame for MHE (avoid GPS origin mismatch)
 
@@ -246,10 +262,6 @@ private:
 
 		// Servo
 		(ParamFloat<px4::params::ROCKET_TAU_SRV>)   _param_tau_servo,
-
-		// Launch site
-		(ParamFloat<px4::params::ROCKET_L_ALT>)     _param_launch_alt,
-		(ParamFloat<px4::params::ROCKET_L_PITCH>)   _param_launch_pitch,
 
 		// MHE
 		(ParamFloat<px4::params::ROCKET_MHE_QG>)    _param_mhe_qg,

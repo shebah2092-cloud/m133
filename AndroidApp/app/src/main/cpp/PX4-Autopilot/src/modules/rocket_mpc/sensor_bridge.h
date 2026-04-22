@@ -33,11 +33,6 @@ class SensorBridge
 public:
 	SensorBridge() = default;
 
-	void set_launch_alt(float launch_alt_m)
-	{
-		_launch_alt_m = launch_alt_m;
-	}
-
 	/** Set GPS reference origin in WGS84 (call at arm / pre-launch) */
 	void set_gps_origin(double lat_deg, double lon_deg, double alt_msl_m)
 	{
@@ -107,6 +102,4 @@ private:
 	// Baro staleness tracking (mirrors GPS pattern)
 	bool   _baro_valid{false};
 	hrt_abstime _last_baro_update_us{0};
-
-	float _launch_alt_m{0.0f};
 };
