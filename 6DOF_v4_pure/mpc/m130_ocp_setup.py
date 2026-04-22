@@ -18,9 +18,17 @@ from m130_acados_model import create_m130_model
 def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
                     launch_alt_val=1500.0, tau_servo_val=0.015,
                     mass_full_val=12.74, mass_dry_val=11.11,
-                    Ixx_full_val=0.0353, Ixx_dry_val=0.0353,
-                    Iyy_full_val=1.0567, Iyy_dry_val=1.0567,
-                    Izz_full_val=1.0567, Izz_dry_val=1.0567,
+                    # Default inertias match
+                    # data/rocket_models/Qabthah1/rocket_properties.yaml
+                    # (kept in sync with create_m130_model() defaults).
+                    # Production calls through MpcController pass explicit
+                    # values from the mass_properties_model; these defaults
+                    # only matter for standalone solver generation, unit
+                    # tests, and the code examples in
+                    # docs/acados_integration_guide.md.
+                    Ixx_full_val=0.0389, Ixx_dry_val=0.0356,
+                    Iyy_full_val=1.1651, Iyy_dry_val=1.0789,
+                    Izz_full_val=1.166,  Izz_dry_val=1.0779,
                     xbc_max_val=0.0):
     model = create_m130_model(
         launch_alt_val=launch_alt_val, tau_servo_val=tau_servo_val,
