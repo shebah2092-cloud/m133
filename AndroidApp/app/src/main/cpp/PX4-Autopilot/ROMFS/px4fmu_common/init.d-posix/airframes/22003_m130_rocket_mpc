@@ -40,9 +40,7 @@ param set CBRK_FLIGHTTERM 121212
 # Control start delay after launch detection (s)
 param set-default ROCKET_T_CTRL      0.2
 
-# Target position in NED (m from launch point)
-param set-default ROCKET_XTRGT   3000.0   # North
-param set-default ROCKET_YTRGT      0.0   # East
+# Target X (downrange, m) uses ROCKET_XTRGT default from rocket_mpc_params.c.
 
 # Fin deflection limit is baked into the acados solver (20° = 0.349 rad).
 # To change it, modify m130_ocp_setup.py::delta_max and regenerate the solver.
