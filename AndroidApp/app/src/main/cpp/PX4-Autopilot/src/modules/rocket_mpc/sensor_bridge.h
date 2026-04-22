@@ -13,7 +13,8 @@ static constexpr int SENSOR_NMEAS = 13;
 // GPS staleness timeout: if no GPS update within this window, treat
 // the cached position/velocity as invalid so stale values are not
 // pushed into the MHE measurement stream.
-static constexpr hrt_abstime GPS_STALE_TIMEOUT_US = 500'000; // 500 ms
+static constexpr hrt_abstime GPS_STALE_TIMEOUT_US  = 500'000; // 500 ms
+static constexpr hrt_abstime BARO_STALE_TIMEOUT_US = 500'000; // 500 ms
 
 struct SensorMeasurement {
 	double y[SENSOR_NMEAS];
@@ -24,6 +25,7 @@ struct SensorMeasurement {
 	// y[9]     = GPS altitude MSL (m)
 	// y[10..12] = GPS velocity N, E, D (m/s)
 	bool valid;
+	bool baro_valid;  // false when baro data is stale (> BARO_STALE_TIMEOUT_US)
 };
 
 class SensorBridge {
@@ -51,6 +53,11 @@ public:
 	 *  Requires set_gps_origin() to have been called first (for alt ref). */
 	void update_from_lpos(const vehicle_local_position_s &lpos);
 
+	/** Feed baro reading — marks baro as valid and records update time.
+	 *  Must be called every cycle that fresh vehicle_air_data arrives so
+	 *  the staleness detector in build_measurement() can work. */
+	void update_baro(const vehicle_air_data_s &air);
+
 	/** Build MHE measurement vector from raw sensors (bypasses EKF2) */
 	SensorMeasurement build_measurement(
 		const sensor_combined_s &sc,
@@ -65,6 +72,12 @@ public:
 	bool   gps_fresh(hrt_abstime now) const {
 		return _gps_valid && _last_gps_update_us > 0
 		       && (now - _last_gps_update_us) < GPS_STALE_TIMEOUT_US;
+	}
+
+	/** True when last baro update is newer than BARO_STALE_TIMEOUT_US. */
+	bool   baro_fresh(hrt_abstime now) const {
+		return _baro_valid && _last_baro_update_us > 0
+		       && (now - _last_baro_update_us) < BARO_STALE_TIMEOUT_US;
 	}
 
 	hrt_abstime last_gps_update_us() const { return _last_gps_update_us; }
@@ -90,6 +103,10 @@ private:
 	double _gps_vd{0.0};
 	bool   _gps_valid{false};
 	hrt_abstime _last_gps_update_us{0};
+
+	// Baro staleness tracking (mirrors GPS pattern)
+	bool   _baro_valid{false};
+	hrt_abstime _last_baro_update_us{0};
 
 	float _launch_alt_m{0.0f};
 };

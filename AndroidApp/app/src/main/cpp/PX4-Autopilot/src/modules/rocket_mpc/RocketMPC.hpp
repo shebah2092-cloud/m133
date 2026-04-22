@@ -176,6 +176,9 @@ private:
 		float alt_err{0.0f};           // last |alt_mhe - alt_ekf|
 	} _xval;
 
+	// Baro staleness one-shot warning (reset on each flight)
+	bool _baro_stale_warned{false};
+
 	// dt measurement
 	hrt_abstime _prev_run_time{0};
 	float       _dt_measured{0.02f};

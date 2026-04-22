@@ -355,6 +355,9 @@ void RocketMPC::_reset_flight_state()
 
 	// Cross-validation state
 	_xval = {};
+
+	// Baro staleness warning (allow re-warn on next flight)
+	_baro_stale_warned = false;
 }
 
 void RocketMPC::Run()
@@ -455,6 +458,7 @@ void RocketMPC::Run()
 
 	vehicle_air_data_s air{};
 	_vehicle_air_data_sub.copy(&air);
+	_sensor.update_baro(air);
 
 	// Read GPS for MHE — source depends on mode:
 	//  Real flight: raw sensor_gps (bypasses EKF2)
@@ -732,6 +736,13 @@ void RocketMPC::Run()
 		}
 		// ---- MHE: push measurements & solve ----
 		SensorMeasurement smeas = _sensor.build_measurement(sc, air);
+
+		if (!smeas.baro_valid && !_baro_stale_warned) {
+			PX4_WARN("BARO STALE — frozen altitude in MHE measurement y[6]");
+			_baro_stale_warned = true;
+		} else if (smeas.baro_valid) {
+			_baro_stale_warned = false;
+		}
 
 		if (smeas.valid) {
 			_mhe.push_measurement(t, smeas.y);

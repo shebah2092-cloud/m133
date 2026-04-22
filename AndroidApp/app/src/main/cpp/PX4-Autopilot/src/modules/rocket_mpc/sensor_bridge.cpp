@@ -72,6 +72,16 @@ void SensorBridge::update_from_lpos(const vehicle_local_position_s &lpos)
 	_last_gps_update_us = hrt_absolute_time();
 }
 
+void SensorBridge::update_baro(const vehicle_air_data_s &air)
+{
+	if (air.timestamp == 0) { return; }
+
+	if (!PX4_ISFINITE(air.baro_alt_meter)) { return; }
+
+	_baro_valid = true;
+	_last_baro_update_us = air.timestamp;
+}
+
 SensorMeasurement SensorBridge::build_measurement(
 	const sensor_combined_s &sc,
 	const vehicle_air_data_s &air)
@@ -87,7 +97,17 @@ SensorMeasurement SensorBridge::build_measurement(
 		_gps_valid = false;
 	}
 
+	// Drop baro validity if no update arrived within the staleness window.
+	// Mirrors the GPS staleness guard: prevents a frozen baro altitude
+	// from being pushed into MHE as a valid measurement when the baro
+	// driver dies mid-flight.
+	if (_baro_valid && _last_baro_update_us > 0
+	    && (now - _last_baro_update_us) > BARO_STALE_TIMEOUT_US) {
+		_baro_valid = false;
+	}
+
 	m.valid = (sc.timestamp > 0) && _gps_valid;
+	m.baro_valid = _baro_valid;
 
 	// Gyroscope (body frame, rad/s) — raw from IMU
 	m.y[0] = (double)sc.gyro_rad[0];
