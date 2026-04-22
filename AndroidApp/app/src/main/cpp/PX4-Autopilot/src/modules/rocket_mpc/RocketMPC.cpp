@@ -202,7 +202,7 @@ bool RocketMPC::init()
 	mpc_cfg.tau_servo       = tau_servo;
 	mpc_cfg.impact_angle_deg = impact_ang_deg;
 	mpc_cfg.gamma_natural_rad = compute_gamma_natural(impulse, burn_time, launch_pitch, mass_full);
-	mpc_cfg.cruise_progress  = 0.65f;
+	mpc_cfg.cruise_progress  = _param_cruise_p.get();
 	mpc_cfg.quality_gate_thr = _param_mhe_qg.get();
 
 	if (!_mpc.init(mpc_cfg)) {
@@ -275,6 +275,7 @@ void RocketMPC::parameters_update(bool force)
 		mcfg.t_ctrl          = _param_t_ctrl.get();
 		mcfg.tf              = _param_mpc_tf.get();
 		mcfg.quality_gate_thr = _param_mhe_qg.get();
+		mcfg.cruise_progress = _param_cruise_p.get();
 
 		// Recompute gamma_natural from current propulsion/launch params so
 		// LOS feedforward and MPC config stay consistent with the param set.
