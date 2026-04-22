@@ -31,19 +31,39 @@
 #
 ############################################################################
 
-# Paths to acados and generated solver code
-# Use environment variables if set, otherwise fall back to defaults
-if(DEFINED ENV{ACADOS_ROOT})
-	set(ACADOS_ROOT $ENV{ACADOS_ROOT})
-else()
-	set(ACADOS_ROOT "/home/yoga/m13/acados-main")
+# Paths to acados and generated solver code.
+#
+# Resolution order (first match wins):
+#   1. CMake cache variable (e.g. `-DACADOS_ROOT=/path`)
+#   2. Environment variable (`ACADOS_ROOT`, `M130_SOLVER_ROOT`)
+#   3. Repo-relative default: `<m13>/acados-main` and `<m13>/c_generated_code`
+#
+# The repo root is 5 levels above PX4_SOURCE_DIR
+# (PX4-Autopilot/../../../../.. == AndroidApp/app/src/main/cpp/.. == m13).
+set(M13_REPO_ROOT "${PX4_SOURCE_DIR}/../../../../..")
+
+if(NOT DEFINED ACADOS_ROOT)
+	if(DEFINED ENV{ACADOS_ROOT})
+		set(ACADOS_ROOT $ENV{ACADOS_ROOT})
+	else()
+		set(ACADOS_ROOT "${M13_REPO_ROOT}/acados-main")
+	endif()
 endif()
 
-if(DEFINED ENV{M130_SOLVER_ROOT})
-	set(SOLVER_ROOT $ENV{M130_SOLVER_ROOT})
+if(NOT DEFINED M130_SOLVER_ROOT)
+	if(DEFINED ENV{M130_SOLVER_ROOT})
+		set(SOLVER_ROOT $ENV{M130_SOLVER_ROOT})
+	else()
+		set(SOLVER_ROOT "${M13_REPO_ROOT}/c_generated_code")
+	endif()
 else()
-	set(SOLVER_ROOT "/home/yoga/m13/c_generated_code")
+	set(SOLVER_ROOT "${M130_SOLVER_ROOT}")
 endif()
+
+# Normalise to absolute paths so downstream target_include_directories /
+# target_link_libraries calls do not depend on the current source dir.
+get_filename_component(ACADOS_ROOT "${ACADOS_ROOT}" ABSOLUTE)
+get_filename_component(SOLVER_ROOT "${SOLVER_ROOT}" ABSOLUTE)
 
 # Collect generated solver C sources
 set(SOLVER_SOURCES
