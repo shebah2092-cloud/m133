@@ -58,7 +58,7 @@
  * @decimal 2
  * @group Rocket MPC
  */
-PARAM_DEFINE_FLOAT(ROCKET_T_CTRL, 0.5f);
+PARAM_DEFINE_FLOAT(ROCKET_T_CTRL, 0.3f);
 
 /* ===================================================================
  *  Target
