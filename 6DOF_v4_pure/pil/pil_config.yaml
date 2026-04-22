@@ -4,6 +4,10 @@ target:
     host: 0.0.0.0
     port: 4560
     timeout_s: 600.0
+  # قناة MAVLink الكاملة (port 5760) لالتقاط DEBUG_VECT/NAMED_VALUE_FLOAT
+  mavlink_tcp:
+    host: 127.0.0.1
+    port: 5760
   serial:
     device: /dev/ttyACM0
     baud: 921600
@@ -15,6 +19,14 @@ timing:
   deadline_us: 20000
   warn_us: 10000
   sample_hz: 50
+warmup:
+  # المدة القصوى لانتظار تسليم PX4 ووصول أول HIL_ACTUATOR_CONTROLS.
+  duration_s: 30.0
+  # مهلة استقرار إضافية بعد أول actuator msg قبل بدء حلقة الرحلة.
+  settle_after_arm_s: 2.0
+  # إذا لم تصل أي HIL_ACTUATOR_CONTROLS خلال warm-up، أفشل صراحةً بدلاً من
+  # المتابعة بأصفار (SYS_HITL=0 أو simulator_mavlink غير متصل هي الأسباب الشائعة).
+  abort_on_no_actuator: true
 scenario:
   sim_config: config/6dof_config_advanced.yaml
   duration_s: 500.0
@@ -26,7 +38,9 @@ thresholds:
     attitude_max_deg: 5.0
     cep_max_m: 50.0
     altitude_mae_max: 100.0
+    altitude_max_err_max: 300.0
   timing:
+    deadline_us: 20000
     mpc_p95_max_us: 10000
     mpc_p99_max_us: 15000
     cycle_p95_max_us: 15000
@@ -36,5 +50,3 @@ output:
   results_dir: 6DOF_v4_pure/pil/results
   csv_name: pil_flight.csv
   timing_csv: pil_timing.csv
-  html_report: pil_comparison.html
-  archive: true

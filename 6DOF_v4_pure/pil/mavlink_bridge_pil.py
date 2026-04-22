@@ -67,6 +67,32 @@ COMP_ID = 1
 GCS_SYS_ID = 255
 GCS_COMP_ID = 190
 
+_INT16_MIN = -32768
+_INT16_MAX = 32767
+_UINT16_MAX = 65535
+
+# تسجيل مرّة واحدة فقط لتفادي إغراق الطرفية بنفس تحذير saturation
+_warned: dict = {}
+
+
+def _clip_scaled(val, lo: int, hi: int, name: str) -> int:
+    """قصّ قيمة scaled-int إلى نطاق الحقل MAVLink مع تحذير لمرة واحدة.
+
+    النطاقات الشائعة:
+      • int16  : [-32768, 32767] → سرعة cm/s ≤ ±327.67 m/s
+      • uint16 : [0, 65535]      → airspeed cm/s ≤ 655.35 m/s
+    بدون هذا القصّ، ``struct.pack`` يرمي ``struct.error`` عند تجاوز النطاق
+    ويُنهي الجسر فجأة وسط الرحلة لصواريخ عالية السرعة.
+    """
+    v = int(val)
+    if v < lo or v > hi:
+        if name not in _warned:
+            print(f"[PIL] WARNING: MAVLink field {name!r} saturated "
+                  f"({v} out of [{lo},{hi}]) — clamping.")
+            _warned[name] = True
+        v = max(lo, min(hi, v))
+    return v
+
 
 def _x25_crc(data: bytes, crc: int = 0xFFFF) -> int:
     for b in data:
@@ -81,6 +107,11 @@ def _pack_v2(msg_id: int, payload: bytes, crc_extra: int,
              sys_id: int = SYS_ID, comp_id: int = COMP_ID,
              seq: list = [0]) -> bytes:
     trimmed = payload.rstrip(b"\x00")
+    # قاعدة MAVLink v2 empty-byte truncation تتطلب بقاء بايت واحد على الأقل
+    # حتى لو كان كامل payload أصفاراً. بدون هذا الضمان قد نُرسل رسالة
+    # بطول 0 ثم فك التحزيم في PX4 يفشل.
+    if not trimmed:
+        trimmed = b"\x00"
     tlen = len(trimmed)
     seq_num = seq[0] & 0xFF
     seq[0] = (seq[0] + 1) & 0xFF
@@ -119,17 +150,30 @@ def build_hil_sensor(t_us: int, accel, gyro, mag,
 
 
 def build_hil_gps(t_us: int, lat, lon, alt_m, vn, ve, vd) -> bytes:
+    # MAVLink v2 wire order for HIL_GPS (msg 113) is size-sorted, NOT XML
+    # declaration order. Correct layout (non-extension, 36 bytes):
+    #   time_usec(u64) + lat(i32) + lon(i32) + alt(i32) +
+    #   eph(u16) + epv(u16) + vel(u16) + vn(i16) + ve(i16) + vd(i16) +
+    #   cog(u16) + fix_type(u8) + satellites_visible(u8)
+    # The previous layout placed fix_type right after time_usec, which
+    # shifted every subsequent field by one byte and caused PX4 to decode
+    # corrupted lat/lon/fix_type (fix_type ended up as the high byte of cog,
+    # typically 0 → NO_FIX). Verified against pymavlink's canonical
+    # HIL_GPS unpacker `<QiiiHHHhhhHBB` (يطابق hil/mavlink_bridge_hil.py).
     lat_e7 = int(lat * 1e7)
     lon_e7 = int(lon * 1e7)
     alt_mm = int(alt_m * 1000)
-    vel_cm = int(np.sqrt(vn * vn + ve * ve) * 100)
+    vel_cm = _clip_scaled(np.sqrt(vn * vn + ve * ve) * 100,
+                          0, _UINT16_MAX, "hil_gps.vel")
     cog = int(np.degrees(np.arctan2(ve, vn)) * 100) % 36000
     payload = struct.pack(
-        "<QBiiiHHHhhhHB",
-        t_us, 3, lat_e7, lon_e7, alt_mm,
+        "<QiiiHHHhhhHBB",
+        t_us, lat_e7, lon_e7, alt_mm,
         250, 400, vel_cm,
-        int(vn * 100), int(ve * 100), int(vd * 100),
-        cog, 12,
+        _clip_scaled(vn * 100, _INT16_MIN, _INT16_MAX, "hil_gps.vn"),
+        _clip_scaled(ve * 100, _INT16_MIN, _INT16_MAX, "hil_gps.ve"),
+        _clip_scaled(vd * 100, _INT16_MIN, _INT16_MAX, "hil_gps.vd"),
+        cog, 3, 12,
     )
     return _pack_v2(MSG_HIL_GPS, payload, CRC_HIL_GPS)
 
@@ -137,17 +181,25 @@ def build_hil_gps(t_us: int, lat, lon, alt_m, vn, ve, vd) -> bytes:
 def build_hil_state_quat(t_us: int, quat, omega,
                           lat, lon, alt_m, vn, ve, vd,
                           accel_body, airspeed: float = 0.0) -> bytes:
+    # ملاحظة: HIL_STATE_QUATERNION في PX4 يُنشر كـ ground-truth فقط
+    # (لا يُغذّي EKF2)، لذا قصّ الحقول هنا آمن ولا يؤثر على تقدير الحالة.
     payload = struct.pack(
         "<Q4f3fiiihhhHHhhh",
         t_us,
         quat[0], quat[1], quat[2], quat[3],
         omega[0], omega[1], omega[2],
         int(lat * 1e7), int(lon * 1e7), int(alt_m * 1000),
-        int(vn * 100), int(ve * 100), int(vd * 100),
-        int(airspeed * 100), 0,
-        int(accel_body[0] / 9.80665 * 1000),
-        int(accel_body[1] / 9.80665 * 1000),
-        int(accel_body[2] / 9.80665 * 1000),
+        _clip_scaled(vn * 100, _INT16_MIN, _INT16_MAX, "hil_state.vn"),
+        _clip_scaled(ve * 100, _INT16_MIN, _INT16_MAX, "hil_state.ve"),
+        _clip_scaled(vd * 100, _INT16_MIN, _INT16_MAX, "hil_state.vd"),
+        _clip_scaled(airspeed * 100, 0, _UINT16_MAX, "hil_state.airspeed"),
+        0,
+        _clip_scaled(accel_body[0] / 9.80665 * 1000,
+                     _INT16_MIN, _INT16_MAX, "hil_state.xacc"),
+        _clip_scaled(accel_body[1] / 9.80665 * 1000,
+                     _INT16_MIN, _INT16_MAX, "hil_state.yacc"),
+        _clip_scaled(accel_body[2] / 9.80665 * 1000,
+                     _INT16_MIN, _INT16_MAX, "hil_state.zacc"),
     )
     return _pack_v2(MSG_HIL_STATE_QUATERNION, payload, CRC_HIL_STATE_QUATERNION)
 
@@ -155,25 +207,29 @@ def build_hil_state_quat(t_us: int, quat, omega,
 # ─── Parsers ─────────────────────────────────────────────────────────────────
 
 def parse_actuator_controls(payload: bytes) -> Optional[dict]:
-    """HIL_ACTUATOR_CONTROLS (msg 93): time_usec + flags + 16 floats + mode."""
-    if len(payload) < 32:
+    """HIL_ACTUATOR_CONTROLS (msg 93): time_usec(u64) + flags(u64) + 16 floats + mode(u8).
+
+    MAVLink v2 قد يقلّص الأصفار اللاحقة على حدود بايت (ليس حقل)، لذلك
+    نُبَطِّن إلى الحجم الكامل (81 بايت) قبل فك التحزيم. الإصدار السابق كان
+    يعتمد على fallback يحسب ``n = (len-16)//4`` ويتجاهل bytes تقصير غير
+    مُحاذية (مثل تقصير وسط float)، فكان يعيد قيم أصفار مزيّفة بدلاً من
+    القيم الحقيقية للتحكم. باستخدام تبطين صريح نقرأ الصيغة الكاملة دائماً.
+    """
+    if len(payload) < 16:
         return None
+    FULL = 81
+    if len(payload) < FULL:
+        payload = payload + b"\x00" * (FULL - len(payload))
     try:
-        if len(payload) >= 81:
-            v = struct.unpack("<QQ16fB", payload[:81])
-            return {"t_us": v[0], "controls": list(v[2:18])}
-        n = (len(payload) - 16) // 4
-        fmt = f"<QQ{min(n, 16)}f"
-        sz = struct.calcsize(fmt)
-        v = struct.unpack(fmt, payload[:sz])
-        c = list(v[2:]) + [0.0] * (16 - min(n, 16))
-        return {"t_us": v[0], "controls": c}
+        v = struct.unpack("<QQ16fB", payload[:FULL])
+        return {"t_us": v[0], "controls": list(v[2:18])}
     except struct.error:
         return None
 
 
 def parse_named_value_float(payload: bytes) -> Optional[dict]:
-    """NAMED_VALUE_FLOAT (msg 251): time_boot_ms(u32) + value(f32) + name[10].
+    """NAMED_VALUE_FLOAT (msg 251) wire order (size-sorted):
+        time_boot_ms(u32) + value(f32) + name[10]
     MAVLink v2 قد يقلّص الأصفار اللاحقة."""
     if len(payload) < 8:
         return None
@@ -188,7 +244,8 @@ def parse_named_value_float(payload: bytes) -> Optional[dict]:
 
 
 def parse_debug_vect(payload: bytes) -> Optional[dict]:
-    """DEBUG_VECT (msg 250): name[10] + time_usec(u64) + x(f32) + y(f32) + z(f32).
+    """DEBUG_VECT (msg 250) wire order (size-sorted, NOT XML order):
+        time_usec(u64) + x(f32) + y(f32) + z(f32) + name[10]
     MAVLink v2 يحذف الأصفار اللاحقة، لذا قد يكون payload < 30 بايت."""
     if len(payload) < 20:
         return None
@@ -234,9 +291,29 @@ class MavParser:
 # أدوات مساعدة
 # ============================================================================
 
+# WGS84 constants (used for small-NED → LLA conversion fallback)
+_WGS84_A = 6378137.0          # semi-major axis (m)
+_WGS84_F = 1.0 / 298.257223563  # flattening
+_WGS84_E2 = _WGS84_F * (2.0 - _WGS84_F)  # first eccentricity squared
+
+
 def _ned_to_lla(pos, lat0, lon0, alt0):
-    lat = lat0 + np.degrees(pos[0] / 6371000.0)
-    lon = lon0 + np.degrees(pos[1] / (6371000.0 * np.cos(np.radians(lat0))))
+    """تحويل NED محلي → LLA باستخدام أنصاف أقطار تقوس WGS84.
+
+    الصيغة السابقة استخدمت نصف قطر ثابت 6371 km بدون تسطيح، مما يُراكم
+    خطأً ملموساً لمديات > 100 km (يدخل مباشرة إلى HIL_GPS ويُغذّي EKF2).
+    هنا نستخدم meridian (M) و prime-vertical (N) radii الفعليين عند lat0:
+        M = a(1-e²)/(1-e²sin²lat)^(3/2)     → يقوّم dlat من dN
+        N = a/(1-e²sin²lat)^(1/2)            → يقوّم dlon من dE
+    """
+    lat0_rad = np.radians(lat0)
+    sin_lat = np.sin(lat0_rad)
+    cos_lat = np.cos(lat0_rad)
+    w = np.sqrt(max(1.0 - _WGS84_E2 * sin_lat * sin_lat, 1e-12))
+    R_meridian = _WGS84_A * (1.0 - _WGS84_E2) / (w ** 3)
+    R_normal = _WGS84_A / w
+    lat = lat0 + np.degrees(pos[0] / R_meridian)
+    lon = lon0 + np.degrees(pos[1] / (R_normal * max(cos_lat, 1e-9)))
     alt = alt0 - pos[2]
     return lat, lon, alt
 
@@ -292,6 +369,13 @@ class PILBridge:
         self.timing_enabled = bool(timing_cfg.get("enabled", True))
         self.deadline_us = int(timing_cfg.get("deadline_us", 20000))
 
+        warmup_cfg = self.cfg.get("warmup", {})
+        self.warmup_duration_s = float(warmup_cfg.get("duration_s", 15.0))
+        self.settle_after_arm_s = float(warmup_cfg.get("settle_after_arm_s", 2.0))
+        # إذا لم تصل أي HIL_ACTUATOR_CONTROLS خلال warm-up، أفشل صراحة
+        # (PX4 على الأغلب ليس في HIL mode: SYS_HITL=0 أو لم يُقلع EKF2 بعد).
+        self.abort_on_no_actuator = bool(warmup_cfg.get("abort_on_no_actuator", True))
+
         # تحميل إعدادات المحاكاة وضبط وضع "none" (لا تحكم داخلي)
         with open(sim_cfg_path, "r", encoding="utf-8") as f:
             sim_cfg = yaml.safe_load(f)
@@ -325,6 +409,9 @@ class PILBridge:
         self._sim_t_us = 0
         self._fins_rad = np.zeros(4)
         self._last_controls = np.zeros(16)
+        # عدّاد رسائل HIL_ACTUATOR_CONTROLS المستلمة — يُستخدم كـproxy لـاستعداد
+        # الهدف في warm-up (أول رسالة = PX4 سلّم نفسه وفي HIL mode).
+        self._actuator_msg_count = 0
         self._running = False
 
         # سجلّ الرحلة
@@ -350,25 +437,44 @@ class PILBridge:
         self._timing_stop = threading.Event()
 
     def __del__(self):
+        tmp = getattr(self, "_tmp", None)
+        if tmp is None:
+            return
         try:
-            os.unlink(self._tmp.name)
+            os.unlink(tmp.name)
         except (OSError, AttributeError):
             pass
 
     # ─── الشبكة ──────────────────────────────────────────────────────────────
 
     def accept(self):
-        """انتظار اتصال PX4 من الجهاز الهدف."""
+        """انتظار اتصال PX4 من الجهاز الهدف. يرفع RuntimeError عند انتهاء المهلة."""
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        srv.bind((self.host, self.port))
+        try:
+            srv.bind((self.host, self.port))
+        except OSError as e:
+            srv.close()
+            raise RuntimeError(
+                f"[PIL] Failed to bind {self.host}:{self.port}: {e}"
+            ) from e
         srv.listen(1)
         srv.settimeout(self.accept_timeout_s)
         print(f"[PIL] Listening on TCP {self.host}:{self.port} — "
-              f"start PX4 on target device...")
-        self._sock, addr = srv.accept()
+              f"start PX4 on target device (timeout={self.accept_timeout_s:.0f}s)...")
+        try:
+            self._sock, addr = srv.accept()
+        except socket.timeout as e:
+            srv.close()
+            raise RuntimeError(
+                f"[PIL] No target connected within {self.accept_timeout_s:.0f}s. "
+                "تحقّق أن PX4 مُقلع على الجهاز الهدف وأن عنوان الشبكة صحيح."
+            ) from e
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # نُبقي المقبس في وضع blocking افتراضياً لأن _send يستخدم sendall()
+        # الذي يرمي BlockingIOError على non-blocking socket حين يمتلئ TCP
+        # send buffer. التبديل إلى non-blocking يحدث داخل _recv_nonblock فقط.
         srv.close()
         print(f"[PIL] Target connected from {addr}")
 
@@ -467,6 +573,12 @@ class PILBridge:
             self._running = False
 
     def _recv_nonblock(self) -> list:
+        # نُبدّل الـsocket إلى non-blocking لقراءة واحدة فقط ثم نُعيده إلى
+        # blocking. الإبقاء على blocking ضروري لـ sendall() في _send الذي يرمي
+        # BlockingIOError على non-blocking socket حين يمتلئ TCP send buffer
+        # (مطابق لنمط hil/mavlink_bridge_hil.py::_recv_nonblock).
+        # _send و _recv_nonblock يُستدعيان من الخيط الرئيسي فقط (خيط
+        # 5760 له socket منفصل)، فلا حاجة لقفل هنا.
         if self._sock is None:
             return []
         try:
@@ -482,10 +594,11 @@ class PILBridge:
             self._running = False
             return []
         finally:
-            try:
-                self._sock.setblocking(True)
-            except OSError:
-                pass
+            if self._sock is not None:
+                try:
+                    self._sock.setblocking(True)
+                except OSError:
+                    pass
 
     # ─── بناء بيانات الحسّاسات ───────────────────────────────────────────────
 
@@ -543,14 +656,19 @@ class PILBridge:
         def _ctrl(_state_dict, _t):
             return self._fins_rad.copy()
 
-        # warm-up موسّع: إرسال HEARTBEAT وحسّاسات ثابتة لتمكين الهاتف من:
-        # (1) بدء simulator_mavlink وEKF2، (2) تنفيذ auto-arm، (3) ثبات القياسات.
+        # warm-up: إرسال HEARTBEAT وحسّاسات ثابتة حتى نستقبل أول HIL_ACTUATOR_CONTROLS
+        # من PX4 (يدلّ على تسليم HIL mode وتقارب EKF2)، ثم ننتظر settle_after_arm_s
+        # إضافية لاستقرار الحالة، ثم نبدأ حلقة الرحلة.
         init_sensors = self._sensors(
             {"forces": [0, 0, 0], "vel_ned": [0, 0, 0]}, state
         )
-        print("[PIL] Warm-up (15s): waiting for target arm + EKF convergence...")
-        wu_end = time.monotonic() + 15.0
-        while time.monotonic() < wu_end:
+        print(f"[PIL] Warm-up (up to {self.warmup_duration_s:.0f}s): "
+              "waiting for target arm + EKF convergence...")
+        wu_start = time.monotonic()
+        wu_end = wu_start + self.warmup_duration_s
+        armed = False
+        settle_end = 0.0
+        while time.monotonic() < wu_end and self._running:
             self._sim_t_us += int(dt * 1e6)
             self._send(build_heartbeat())
             self._send(build_hil_state_quat(
@@ -570,7 +688,31 @@ class PILBridge:
                 init_sensors["diff_p"], init_sensors["pressure_alt"],
             ))
             self._drain_target(dt)
+
+            # أول رسالة HIL_ACTUATOR_CONTROLS = PX4 جاهز وفي HIL mode
+            if self._actuator_msg_count > 0 and not armed:
+                armed = True
+                settle_end = time.monotonic() + self.settle_after_arm_s
+                print(f"\n[PIL] Target armed after {time.monotonic()-wu_start:.1f}s "
+                      f"(actuator_msgs={self._actuator_msg_count}). "
+                      f"Settling for {self.settle_after_arm_s:.1f}s...")
+            if armed and time.monotonic() >= settle_end:
+                break
             time.sleep(dt)
+
+        total_wu = time.monotonic() - wu_start
+        print(f"[PIL] Warm-up done in {total_wu:.1f}s  "
+              f"(armed={armed}, actuator_msgs={self._actuator_msg_count})")
+
+        if self._actuator_msg_count == 0 and self.abort_on_no_actuator:
+            raise RuntimeError(
+                "[PIL] PX4 لم يُرسل أي HIL_ACTUATOR_CONTROLS خلال warm-up.\n"
+                "  الأسباب المحتملة:\n"
+                "    1) SYS_HITL=0 — ضبطه يتطلب إعادة تشغيل PX4 بعد PARAM_SET.\n"
+                "    2) simulator_mavlink ليس متصلاً بالجسر (تحقّق من البورت 4560).\n"
+                "    3) EKF2 لم يتقارب (GPS lock مفقود — راجع warm-up أطول).\n"
+                "  لتجاوز هذا الفحص: warmup.abort_on_no_actuator: false في pil_config.yaml."
+            )
 
         print("[PIL] Starting flight loop (realtime)...")
         t_wall0 = time.monotonic()
@@ -578,7 +720,13 @@ class PILBridge:
         step = 0
         t = 0.0
 
-        sensor_every = max(1, int(round(1.0 / (250 * dt))))
+        # معدلات الإرسال (dt=0.01 → سقف عملي 100Hz):
+        #   HIL_SENSOR : 100Hz (EKF2 يقبل 80Hz+).
+        #   HIL_STATE  : 50Hz (ground-truth عرضي، لا يُغذّي EKF2).
+        #   HIL_GPS    : 10Hz (تحديث GPS قياسي).
+        # الصيغة السابقة كانت `1.0/(250*dt)` التي تُنتج 0→max(1,0)=1 مع dt=0.01،
+        # مُوهمة أن المعدّل 250Hz. الصيغة الجديدة صريحة تطابق تصحيح hil/ (M4).
+        sensor_every = max(1, int(round(1.0 / (100 * dt))))
         gps_every = max(1, int(round(1.0 / (10 * dt))))
         state_every = max(1, int(round(1.0 / (50 * dt))))
         hb_every = 100
@@ -672,28 +820,42 @@ class PILBridge:
     # ─── استقبال رسائل الهدف ────────────────────────────────────────────────
 
     def _drain_target(self, dt: float):
-        """قراءة ما توفّر من الهدف بلا حجب. يحدّث التحكّم وسجلّ التوقيت."""
+        """قراءة ما توفّر من الهدف بلا حجب. يحدّث التحكّم وسجلّ التوقيت.
+
+        ملاحظة: رسائل التوقيت عبر القناة الأساسية (TCP 4560 — simulator_mavlink)
+        نادرة جداً (هذه القناة تبثّ HIL_* و HIL_ACTUATOR_CONTROLS فقط)، لكنّنا
+        نحتفظ بدعمها كـfallback. عبر القفل _timing_lock نتجنّب التسابق مع
+        _timing_reader_loop (TCP 5760) الذي يكتب في نفس self.timing.
+        """
         msgs = self._recv_nonblock()
-        got_timing = False
+        timing_updates: list = []  # نجمّع ثم نقفل مرة واحدة
         for msg_id, payload in msgs:
             if msg_id == MSG_HIL_ACTUATOR_CONTROLS:
                 p = parse_actuator_controls(payload)
                 if p:
                     self._last_controls = np.array(p["controls"])
+                    self._actuator_msg_count += 1
             elif self.timing_enabled and msg_id == MSG_NAMED_VALUE_FLOAT:
                 p = parse_named_value_float(payload)
                 if p and p["name"] in ("mhe_us", "mpc_us", "cycle_us"):
-                    self._last_timing[p["name"]] = p["value"]
-                    got_timing = True
+                    timing_updates.append(("named", p["name"], p["value"]))
             elif self.timing_enabled and msg_id == MSG_DEBUG_VECT:
                 p = parse_debug_vect(payload)
                 # الاصطلاح: name="TIMING", x=mhe_us, y=mpc_us, z=cycle_us
                 if p and p["name"].upper().startswith("TIMING"):
-                    self._last_timing["mhe_us"] = p["x"]
-                    self._last_timing["mpc_us"] = p["y"]
-                    self._last_timing["cycle_us"] = p["z"]
-                    got_timing = True
-        if got_timing:
+                    timing_updates.append((("vect", p["x"], p["y"], p["z"])))
+        if not timing_updates:
+            return
+        with self._timing_lock:
+            for upd in timing_updates:
+                if upd[0] == "named":
+                    self._last_timing[upd[1]] = upd[2]
+                else:
+                    _, x, y, z = upd
+                    self._last_timing["mhe_us"] = x
+                    self._last_timing["mpc_us"] = y
+                    self._last_timing["cycle_us"] = z
+            # عيّنة واحدة لكل استدعاء _drain_target (تجنّب التضخيم الكاذب للعينات)
             self.timing["t_sim"].append(self._sim_t_us / 1e6)
             self.timing["mhe_us"].append(self._last_timing["mhe_us"])
             self.timing["mpc_us"].append(self._last_timing["mpc_us"])

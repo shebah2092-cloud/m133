@@ -43,6 +43,12 @@ python pil_runner.py --pil-only         # PIL فقط
 python pil_runner.py --compare-only     # مقارنة من CSV موجودة
 ```
 
+مجلد `results/` يُنشَأ تلقائياً عند أول تشغيل (لا يُحفظ في الريپو).
+
+## آلية warm-up
+
+الجسر الآن ينتظر أول `HIL_ACTUATOR_CONTROLS` كـ proxy لاستعداد PX4 (SYS_HITL مفعّل + EKF2 متقارب)، ثم ينتظر `settle_after_arm_s` إضافية قبل بدء حلقة الرحلة. إن لم يصل شيء خلال `warmup.duration_s` يُفشِل صراحةً مع تعليمات تشخيصية. لتعطيل الفحص استخدم `warmup.abort_on_no_actuator: false` في `pil_config.yaml`.
+
 ## متطلبات الهدف
 
 لقياس التوقيت، يجب أن ينشر `rocket_mpc` على الجهاز إحدى الطريقتين:
