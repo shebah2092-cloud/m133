@@ -120,6 +120,7 @@ RocketMPC::RocketMPC() :
 	_actuator_outputs_sim_pub.advertise();
 	_actuator_servos_pub.advertise();
 	_rocket_gnc_status_pub.advertise();
+	_timing_debug_pub.advertise();
 
 	parameters_update(true);
 }
@@ -1263,10 +1264,12 @@ void RocketMPC::Run()
 		status.dt_min         = _dt_min;
 		status.dt_max         = (_dt_count > 0) ? _dt_max : 0.0f;
 
-		// Servo mask
+		// Servo mask — only trust fresh readings (< 500 ms old) so a
+		// dead xqpower_can driver doesn't leave a stale mask in telemetry.
 		debug_array_s dbg_srv{};
 
-		if (_debug_array_sub.copy(&dbg_srv) && dbg_srv.id == 1) {
+		if (_debug_array_sub.copy(&dbg_srv) && dbg_srv.id == 1
+		    && (now - dbg_srv.timestamp) < 500_ms) {
 			status.servo_online_mask = (uint8_t)dbg_srv.data[12];
 		}
 
