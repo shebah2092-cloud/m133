@@ -165,9 +165,6 @@ private:
 				    false = real flight — IGNORE actuator_outputs_sim, use
 					    actuator_servos only (normalized)
 				    Set once at init() from SYS_HITL param. */
-	bool _sim_mode{false};   /* true = HITL/SITL — use actuator_outputs_sim (radians)
-				    false = real flight — use actuator_servos (normalized)
-				    set once at init() from SYS_HITL param */
 
 	/* Run() cycle counters */
 	int _fb_cycle{0};
