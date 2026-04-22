@@ -229,6 +229,16 @@ def build_hil_sensor(t_us: int, accel, gyro, mag,
 
 
 def build_hil_gps(t_us: int, lat, lon, alt_m, vn, ve, vd) -> bytes:
+    # MAVLink v2 wire order for HIL_GPS (msg 113) is size-sorted, NOT XML
+    # declaration order. Correct layout (non-extension, 36 bytes):
+    #   time_usec(u64) + lat(i32) + lon(i32) + alt(i32) +
+    #   eph(u16) + epv(u16) + vel(u16) + vn(i16) + ve(i16) + vd(i16) +
+    #   cog(u16) + fix_type(u8) + satellites_visible(u8)
+    # The previous layout placed fix_type right after time_usec, which
+    # shifted every subsequent field by one byte and caused PX4 to decode
+    # corrupted lat/lon/fix_type (fix_type ended up as the high byte of cog,
+    # typically 0 → NO_FIX). Verified against pymavlink's canonical
+    # HIL_GPS unpacker `<QiiiHHHhhhHBB`.
     lat_e7 = int(lat * 1e7)
     lon_e7 = int(lon * 1e7)
     alt_mm = int(alt_m * 1000)
@@ -236,13 +246,13 @@ def build_hil_gps(t_us: int, lat, lon, alt_m, vn, ve, vd) -> bytes:
                           0, _UINT16_MAX, "hil_gps.vel")
     cog = int(np.degrees(np.arctan2(ve, vn)) * 100) % 36000
     payload = struct.pack(
-        "<QBiiiHHHhhhHB",
-        t_us, 3, lat_e7, lon_e7, alt_mm,
+        "<QiiiHHHhhhHBB",
+        t_us, lat_e7, lon_e7, alt_mm,
         250, 400, vel_cm,
         _clip_scaled(vn * 100, _INT16_MIN, _INT16_MAX, "hil_gps.vn"),
         _clip_scaled(ve * 100, _INT16_MIN, _INT16_MAX, "hil_gps.ve"),
         _clip_scaled(vd * 100, _INT16_MIN, _INT16_MAX, "hil_gps.vd"),
-        cog, 12,
+        cog, 3, 12,
     )
     return _pack_v2(MSG_HIL_GPS, payload, CRC_HIL_GPS)
 
