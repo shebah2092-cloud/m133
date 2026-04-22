@@ -556,10 +556,6 @@ void RocketMPC::Run()
 		// MHE telemetry, xval). Centralised to keep arm / disarm in
 		// lockstep and guarantee no state bleeds across flights.
 		_reset_flight_state();
-
-		if (_param_gnd_test.get() == 1) {
-			mavlink_log_critical(&_mavlink_log_pub, "WARNING: GROUND TEST MODE");
-		}
 	}
 
 	if (!is_armed && _armed) {
@@ -1060,14 +1056,12 @@ void RocketMPC::Run()
 		gamma_ref = los.gamma_ref;
 		chi_ref   = los.chi_ref;
 
-		// Skip if too close to target
+		// When dx < 50 m (near target) and MPC has solved at least once,
+		// skip a new solve. The cached fin[] / delta_* already hold the
+		// last command via the default-initialisation above, so no
+		// action is needed inside this branch.
 		if (los.dx_to_target < 50.0f && _mpc.solve_count() > 0) {
-			// Hold last command
-			const MpcSolveResult &last = {fin[0], fin[1], fin[2], fin[3],
-						      delta_e, delta_r, delta_a,
-						      mpc_status, mpc_solve_ms, 0, false};
-			(void)last;
-
+			// intentionally empty: keep cached _last_fins / _last_d*
 		} else {
 			// Build x_mpc[18]
 			double x_mpc[MPC_NX];

@@ -30,7 +30,6 @@ param set SYS_HITL 1
 param set ROCKET_T_CTRL      0.2
 param set ROCKET_XTRGT   3000.0
 param set ROCKET_YTRGT      0.0
-param set ROCKET_GND_TEST  0
 
 # ---- XQPOWER CAN servo parameters ----
 param set XQCAN_ENABLE     1

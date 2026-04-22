@@ -237,9 +237,6 @@ private:
 		// MPC solver
 		(ParamFloat<px4::params::ROCKET_MPC_TF>)    _param_mpc_tf,
 
-		// Test
-		(ParamInt<px4::params::ROCKET_GND_TEST>)     _param_gnd_test,
-
 		// SITL: use EKF2 lpos as GPS substitute for MHE (0=disabled, 1=enabled)
 		(ParamInt<px4::params::ROCKET_SITL_GPS>)     _param_sitl_gps
 	)

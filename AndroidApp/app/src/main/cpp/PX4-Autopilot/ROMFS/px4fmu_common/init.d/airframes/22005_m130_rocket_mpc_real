@@ -56,6 +56,3 @@ param set-default ROCKET_YTRGT      0.0   # East
 
 # Fin deflection limit is baked into the acados solver (20° = 0.349 rad).
 # To change it, modify m130_ocp_setup.py::delta_max and regenerate the solver.
-
-# Ground test mode (0=flight, 1=ground test)
-param set-default ROCKET_GND_TEST  0
