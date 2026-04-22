@@ -396,40 +396,26 @@ class HILBridge:
             warmup.get("clear_flight_termination", True)
         )
 
-        # ─── إعدادات وضع HIL وفيدباك السيرفو ──────────────────────────────
-        # mode:
-        #   monitor_only (default): ديناميكا المحاكاة تستخدم أمر MPC الخام
-        #     عبر نموذج سيرفو Python (τ=15ms). فيدباك CAN للتسجيل
-        #     وفحص السلامة فقط. هذا السلوك التاريخي.
-        #   closed_loop: الزاوية المقاسة من السيرفوهات الحقيقية (SRV_FB)
-        #     تُحقن مباشرة في الأيروديناميكا، ويُعطَّل نموذج Python لتفادي
-        #     مضاعفة التأخير. هذا يكشف backlash/slew/CAN-latency/jitter في
-        #     سلوك العتاد الفعلي على الكتلة الهوائية المحاكاة.
-        # backward-compat: إذا لم يُذكر mode، نفترض monitor_only ونحترم
-        # use_servo_feedback القديم كما هو.
+        # ─── إعدادات فيدباك السيرفو ──────────────────────────────────────
+        # HIL يعمل في closed_loop فقط: الزاوية المقاسة من السيرفوهات
+        # الحقيقية (SRV_FB عبر DEBUG_FLOAT_ARRAY) تُحقن مباشرة في
+        # الأيروديناميكا، ونموذج Python السيرفو مُعطَّل لتفادي مضاعفة
+        # التأخير. هذا يكشف backlash/slew/CAN-latency/jitter في سلوك
+        # العتاد الفعلي على الكتلة الهوائية المحاكاة.
         hil_cfg = self.cfg.get("hil", {})
-        mode_raw = hil_cfg.get("mode", None)
-        if mode_raw is None:
-            self.hil_mode = "monitor_only"
-        else:
-            mode_str = str(mode_raw).strip().lower()
-            if mode_str not in ("monitor_only", "closed_loop"):
-                raise ValueError(
-                    f"hil.mode must be 'monitor_only' or 'closed_loop', "
-                    f"got {mode_raw!r}"
-                )
-            self.hil_mode = mode_str
-        self.use_servo_feedback = bool(hil_cfg.get("use_servo_feedback", True))
-        if self.hil_mode == "closed_loop":
-            # closed_loop يتطلّب قراءة الفيدباك — نفرضها بصمت لأن الوضع
-            # لا معنى له بدونها (`self._fins_rad` يأتي من `_servo_fb_rad`).
-            self.use_servo_feedback = True
+        mode_raw = hil_cfg.get("mode")
+        if mode_raw is not None and str(mode_raw).strip().lower() != "closed_loop":
+            raise ValueError(
+                f"hil.mode must be 'closed_loop' or omitted "
+                f"(monitor_only has been removed); got {mode_raw!r}"
+            )
+        # SRV_FB إلزامي — لا معنى لـ HIL بدون فيدباك العتاد.
+        self.use_servo_feedback = True
         self.servo_feedback_timeout_ms = float(
             hil_cfg.get("servo_feedback_timeout_ms", 200.0)
         )
-        # في closed_loop: إذا شاخ الفيدباك أكثر من abort_ms → إيقاف
-        # المحاكاة (اختبار bench، لا نُشغّل flight termination).
-        # في monitor_only: غير مستخدم (لا يؤثر على الديناميكا).
+        # إذا شاخ الفيدباك أكثر من abort_ms → إيقاف المحاكاة
+        # (اختبار bench، لا نُشغّل flight termination).
         self.servo_feedback_abort_ms = float(
             hil_cfg.get("servo_feedback_abort_ms", 500.0)
         )
@@ -453,16 +439,10 @@ class HILBridge:
         sim_cfg.setdefault("estimation", {})["mode"] = "off"
         sim_cfg.setdefault("initial_conditions", {})["angular_velocity"] = [0.0, 0.0, 0.0]
 
-        # مسار الديناميكا حسب mode:
-        #   monitor_only: أمر MPC → نموذج السيرفو Python (τ=15ms) → المحاكاة.
-        #     EKF يستنتج الحالة من IMU فقط ولا يرى زاوية السيرفو، مطابق
-        #     لسلوك الطيران الحقيقي. فيدباك CAN للرصد فقط.
-        #   closed_loop: زاوية السيرفو المقاسة (SRV_FB) → المحاكاة مباشرة.
-        #     نُعطّل نموذج Python لأن العتاد الحقيقي فيه τ فيزيائي بالفعل
-        #     وإضافة τ رياضي فوقه مضاعفة للتأخير.
-        sim_cfg["simulation"]["use_actuator_dynamics"] = (
-            self.hil_mode != "closed_loop"
-        )
+        # مسار الديناميكا: زاوية السيرفو المقاسة (SRV_FB) → المحاكاة
+        # مباشرة. نُعطّل نموذج Python لأن العتاد الحقيقي فيه τ فيزيائي
+        # بالفعل، وإضافة τ رياضي فوقه مضاعفة للتأخير.
+        sim_cfg["simulation"]["use_actuator_dynamics"] = False
 
         import tempfile
         self._tmp = tempfile.NamedTemporaryFile(
@@ -491,11 +471,10 @@ class HILBridge:
         self._fins_rad = np.zeros(4)
         self._fin_can_rad = np.zeros(4)     # آخر زاوية CAN (rad) — للحفظ في flight log
         self._fin_source = "cmd"             # مصدر _fins_rad لهذه الخطوة:
-        #   "actuator" — monitor_only: نموذج Python (τ=15ms) مطبَّق داخل state_derivative
-        #   "can"      — closed_loop: الزاوية المقاسة الفعلية للسيرفو (fresh + online)
-        #   "hold"     — closed_loop: آخر زاوية CAN معروفة (stale within abort window)
-        #   "cmd"      — closed_loop grace period قبل أول فيدباك
-        #   "abort"    — closed_loop: إيقاف محاكاة بسبب فقدان feedback
+        #   "can"   — الزاوية المقاسة الفعلية للسيرفو (fresh + online)
+        #   "hold"  — آخر زاوية CAN معروفة (stale within abort window)
+        #   "cmd"   — grace period قبل أول فيدباك
+        #   "abort" — إيقاف محاكاة بسبب فقدان feedback
         self._last_controls = np.zeros(16)
         self._actuator_msg_count = 0         # عدد رسائل HIL_ACTUATOR_CONTROLS المستلمة
         self._last_param_values: dict = {}   # name -> {value, type, count, index}
@@ -947,69 +926,55 @@ class HILBridge:
             t = step * dt
             self._sim_t_us = _t_off_us + int(t * 1e6)
 
-            # ─── قراءة حالة فيدباك CAN (مشتركة بين الوضعين) ────────────
-            fb_fresh = False
-            all_online = False
-            fb_rad = self._servo_fb_rad  # default for code below; rewritten if locked read
-            fb_age_us = 0
-            fb_ever_seen = False
-            if self.use_servo_feedback:
-                with self._servo_fb_lock:
-                    fb_age_us = self._sim_t_us - self._servo_fb_t_us
-                    fb_ever_seen = self._servo_fb_t_us > 0
-                    fb_fresh = (
-                        fb_ever_seen
-                        and fb_age_us < self.servo_feedback_timeout_ms * 1000
-                    )
-                    all_online = (self._servo_online_mask & 0x0F) == 0x0F
-                    fb_rad = self._servo_fb_rad.copy()
-                if fb_fresh:
-                    self._fin_can_rad = fb_rad.copy()
-
-            # ─── اختيار زاوية الزعنفة للمحاكاة (يعتمد على hil_mode) ─────
-            if self.hil_mode == "closed_loop":
-                # HIL مغلق الحلقة: الزاوية المقاسة تقود الأيروديناميكا.
-                # use_actuator_dynamics مُعطَّل في sim_cfg → لا نموذج Python.
-                fb_useable = fb_fresh and all_online
-                within_grace = t * 1000.0 < self.servo_feedback_grace_ms
-                abort_threshold_us = self.servo_feedback_abort_ms * 1000.0
-                stale_beyond_abort = (
-                    not within_grace
-                    and (not fb_ever_seen or fb_age_us >= abort_threshold_us)
+            # ─── قراءة حالة فيدباك CAN ─────────────────────────────────
+            with self._servo_fb_lock:
+                fb_age_us = self._sim_t_us - self._servo_fb_t_us
+                fb_ever_seen = self._servo_fb_t_us > 0
+                fb_fresh = (
+                    fb_ever_seen
+                    and fb_age_us < self.servo_feedback_timeout_ms * 1000
                 )
-                if fb_useable:
-                    self._fins_rad = fb_rad
-                    self._fin_source = "can"
-                elif stale_beyond_abort:
-                    # إيقاف محاكاة — فقدنا الفيدباك/العتاد خارج فترة السماح
-                    print(f"\n[HIL] ABORT (closed_loop): servo feedback lost "
-                          f"(age={fb_age_us/1000:.0f}ms, mask=0x"
-                          f"{self._servo_online_mask:02X}). "
-                          f"Stopping simulation at t={t:.3f}s.")
-                    self._fin_source = "abort"
-                    break
-                elif fb_ever_seen:
-                    # تأخير ضمن window [timeout..abort]: احتفظ بآخر زاوية مقاسة
-                    self._fins_rad = self._fin_can_rad.copy()
-                    self._fin_source = "hold"
-                    self._fallback_cmd_count += 1
-                else:
-                    # grace period قبل أول فيدباك: استخدم الأمر مؤقتاً
-                    self._fins_rad = self._last_controls[:4].copy()
-                    self._fin_source = "cmd"
-                    self._fallback_cmd_count += 1
+                all_online = (self._servo_online_mask & 0x0F) == 0x0F
+                fb_rad = self._servo_fb_rad.copy()
+            if fb_fresh:
+                self._fin_can_rad = fb_rad.copy()
+
+            # ─── اختيار زاوية الزعنفة للمحاكاة (closed_loop دائماً) ────
+            # الزاوية المقاسة تقود الأيروديناميكا. use_actuator_dynamics
+            # مُعطَّل في sim_cfg → لا نموذج Python إضافي.
+            fb_useable = fb_fresh and all_online
+            within_grace = t * 1000.0 < self.servo_feedback_grace_ms
+            abort_threshold_us = self.servo_feedback_abort_ms * 1000.0
+            stale_beyond_abort = (
+                not within_grace
+                and (not fb_ever_seen or fb_age_us >= abort_threshold_us)
+            )
+            if fb_useable:
+                self._fins_rad = fb_rad
+                self._fin_source = "can"
+            elif stale_beyond_abort:
+                # إيقاف محاكاة — فقدنا الفيدباك/العتاد خارج فترة السماح
+                print(f"\n[HIL] ABORT: servo feedback lost "
+                      f"(age={fb_age_us/1000:.0f}ms, mask=0x"
+                      f"{self._servo_online_mask:02X}). "
+                      f"Stopping simulation at t={t:.3f}s.")
+                self._fin_source = "abort"
+                break
+            elif fb_ever_seen:
+                # تأخير ضمن window [timeout..abort]: احتفظ بآخر زاوية مقاسة
+                self._fins_rad = self._fin_can_rad.copy()
+                self._fin_source = "hold"
+                self._fallback_cmd_count += 1
             else:
-                # monitor_only: أمر MPC الخام → نموذج Python τ=15ms (داخل
-                # state_derivative) → المحاكاة. EKF يستنتج الحالة من IMU فقط
-                # ولا يرى زاوية السيرفو — يُطابق الطيران الحقيقي.
+                # grace period قبل أول فيدباك: استخدم الأمر مؤقتاً
                 self._fins_rad = self._last_controls[:4].copy()
-                self._fin_source = "actuator"
+                self._fin_source = "cmd"
+                self._fallback_cmd_count += 1
 
             # ─── تحقق سلامة: خطأ تتبع > 10° مستدام → فشل سيرفو محتمل ────
-            # نفس المنطق في كلا الوضعين لأن المرجع المطلوب من العتاد هو
-            # أمر MPC الخام (`_last_controls[:4]`)، بصرف النظر عن ماذا
-            # يُحقن في الأيروديناميكا.
-            if self.use_servo_feedback and fb_fresh and all_online:
+            # المرجع المطلوب من العتاد هو أمر MPC الخام
+            # (`_last_controls[:4]`)، بصرف النظر عمّا يُحقن في الأيروديناميكا.
+            if fb_fresh and all_online:
                 err_rad = float(np.max(np.abs(fb_rad - self._last_controls[:4])))
                 if err_rad > 0.175:
                     self._servo_safety_breach = getattr(
@@ -1090,19 +1055,12 @@ class HILBridge:
         print(f"[HIL] Servo feedback: {fb_n} frames, "
               f"fallback_to_cmd={self._fallback_cmd_count} steps, "
               f"online_mask=0x{self._servo_online_mask:02X}, "
-              f"tx_fail={self._servo_tx_fail}, "
-              f"mode={self.hil_mode}")
-        if fb_n == 0 and self.use_servo_feedback:
-            if self.hil_mode == "closed_loop":
-                print("[HIL] WARNING: no SRV_FB received in closed_loop mode "
-                      "— simulation aborted or ran on grace-period command "
-                      "fallback. Check: xqpower_can running? CAN USB "
-                      "connected? DEBUG_FLOAT_ARRAY stream enabled?")
-            else:
-                print("[HIL] WARNING: no SRV_FB received — monitor-only "
-                      "safety checks and CAN log are empty. Check: "
-                      "xqpower_can running? CAN USB connected? "
-                      "DEBUG_FLOAT_ARRAY stream enabled?")
+              f"tx_fail={self._servo_tx_fail}")
+        if fb_n == 0:
+            print("[HIL] WARNING: no SRV_FB received — simulation "
+                  "aborted or ran on grace-period command fallback. "
+                  "Check: xqpower_can running? CAN USB connected? "
+                  "DEBUG_FLOAT_ARRAY stream enabled?")
 
         # ملاحظة: إغلاق sockets يتم في run()/finally عبر _cleanup_sockets
         # لضمان النظافة حتى لو حدث استثناء قبل الوصول لهذه النقطة.

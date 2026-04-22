@@ -347,12 +347,11 @@ def compare(baseline_csv: str, hil_csv: str, timing_csv: str | None,
 
 
 def _analyze_servo_tracking(hil_data: dict) -> dict:
-    """يحلل تتبع السيرفو: fin_act (نموذج Python) ↔ fin_cmd (أمر MPC).
+    """يحلل تتبع السيرفو: fin_act (زاوية العتاد المقاسة) ↔ fin_cmd (أمر MPC).
 
-    في وضع HIL، PX4 لا يُوجّه الأوامر للسيرفوهات الحقيقية عبر CAN
-    (CAN fb ≈ 0 أثناء الطيران). لذا المقارنة الصحيحة هي بين
-    fin_cmd (أمر MPC الخام) و fin_act (الزاوية بعد نموذج السيرفو Python).
-    هذا يتحقق أن نموذج السيرفو يعمل وأن التأخير ضمن الحدود.
+    في closed_loop HIL (الوضع الوحيد)، fin_act = الزاوية الحقيقية
+    المقاسة من السيرفوهات عبر SRV_FB (مطابق لـ fin_can). العتبة تقيس
+    أداء السيرفو الحقيقي (backlash/slew/CAN-latency/jitter).
     """
     has_act = all(k in hil_data for k in ("fin_act_1", "fin_act_2", "fin_act_3", "fin_act_4"))
     has_cmd = all(k in hil_data for k in ("fin_cmd_1", "fin_cmd_2", "fin_cmd_3", "fin_cmd_4"))
@@ -369,7 +368,7 @@ def _analyze_servo_tracking(hil_data: dict) -> dict:
     cmd_rad = np.column_stack([hil_data["fin_cmd_1"], hil_data["fin_cmd_2"],
                                hil_data["fin_cmd_3"], hil_data["fin_cmd_4"]])
 
-    # خطأ التتبع: fin_act يجب أن يتبع fin_cmd مع تأخير τ=15ms
+    # خطأ التتبع: fin_act يجب أن يتبع fin_cmd مع تأخير العتاد الفيزيائي
     err_deg = np.abs(np.degrees(act_rad - cmd_rad))
     max_err_per_step = np.max(err_deg, axis=1)
 
@@ -455,7 +454,7 @@ def _gate(m: dict, th: dict) -> bool:
         if t.get("deadline_miss", 0) > tg.get("deadline_miss_max", 0):
             ok = False
 
-    # بوابة تتبع السيرفو (fin_act ↔ fin_cmd — نموذج Python)
+    # بوابة تتبع السيرفو (fin_act ↔ fin_cmd — العتاد الحقيقي)
     srv = m.get("servo_tracking", {})
     if srv.get("available", False):
         if srv.get("tracking_mae_deg", 0) > st.get("tracking_mae_max_deg", 1e9):
@@ -490,7 +489,7 @@ def _print_summary(m: dict, th: dict) -> None:
     _chk("range_mae (m)",         m.get("range_mae"),       None)
     _chk("CEP (m)",               m.get("cep_m"),           vb.get("cep_max_m"))
 
-    # تتبع السيرفو (fin_act ↔ fin_cmd — نموذج Python)
+    # تتبع السيرفو (fin_act ↔ fin_cmd — العتاد الحقيقي)
     srv = m.get("servo_tracking", {})
     if srv.get("available", False):
         print(f"\n  [servo tracking] fin_act vs fin_cmd   steps={srv.get('total_steps',0)}")
