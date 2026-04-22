@@ -56,10 +56,22 @@ void SensorBridge::update_from_lpos(const vehicle_local_position_s &lpos)
 	// Guard 3: reject non-finite values (NaN / Inf) that would poison MHE.
 	if (!PX4_ISFINITE(lpos.x) || !PX4_ISFINITE(lpos.y) || !PX4_ISFINITE(lpos.z)) { return; }
 
-	_gps_north   = (double)lpos.x;
-	_gps_east    = (double)lpos.y;
-	// Convert NED-down to altitude MSL for MHE measurement model
-	_gps_alt_msl = _ref_alt_msl + (double)(-lpos.z);
+	// Subtract the arm-time NED origin so MHE's position measurements are
+	// arm-relative, matching the real-flight path where set_gps_origin() is
+	// called with the arm-time WGS84 fix. Without this, _gps_north = lpos.x
+	// would be relative to the EKF2 origin (lpos.ref_lat/lon) while the MPC
+	// state's Xm = lpos.x - _arm_origin_x is relative to the arm position,
+	// creating a constant (_arm_origin) offset that the EKF↔MHE blend
+	// injects into cur_x as the blend ramps from 0 to 1.
+	// When set_ned_origin() has not been called yet (pre-arm), _ned_origin_*
+	// default to zero and this reduces to the previous behaviour.
+	_gps_north   = (double)(lpos.x - _ned_origin_x);
+	_gps_east    = (double)(lpos.y - _ned_origin_y);
+	// Convert NED-down to altitude MSL for MHE measurement model. The arm
+	// altitude offset (relative to EKF2 ref) is folded into _ref_alt_msl by
+	// RocketMPC's set_gps_origin() call (which uses arm-position MSL), so the
+	// resulting y[9] stays consistent with the MHE launch_alt parameter.
+	_gps_alt_msl = _ref_alt_msl + (double)(-(lpos.z - _ned_origin_z));
 
 	if (lpos.v_xy_valid && lpos.v_z_valid
 	    && PX4_ISFINITE(lpos.vx) && PX4_ISFINITE(lpos.vy) && PX4_ISFINITE(lpos.vz)) {

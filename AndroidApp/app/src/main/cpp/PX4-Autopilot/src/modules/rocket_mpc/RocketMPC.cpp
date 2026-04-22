@@ -623,15 +623,28 @@ void RocketMPC::Run()
 		_arm_origin_y = lpos.y;
 		_arm_origin_z = lpos.z;
 
+		// Give SensorBridge the arm-time NED offset so update_from_lpos()
+		// produces arm-relative position measurements (same frame as Xm/Ym/Zm
+		// built below). Without this, HITL/SITL MHE estimates would be
+		// offset by _arm_origin from the MPC state, and the EKF↔MHE blend
+		// would inject that offset into cur_x as the blend ramped up.
+		_sensor.set_ned_origin(_arm_origin_x, _arm_origin_y, _arm_origin_z);
+
 		// Set GPS origin for MHE — source depends on mode
 		if (_hitl || _param_sitl_gps.get() == 1) {
-			// HITL/SITL: derive origin from EKF2 reference (same frame as lpos)
+			// HITL/SITL: derive origin from EKF2 reference (same frame as lpos).
+			// Use the arm-position MSL altitude (ref_alt shifted by lpos.z at arm)
+			// so that the MHE `launch_alt` parameter matches the height that
+			// update_from_lpos() reports as y[9] after the set_ned_origin offset
+			// is applied. Otherwise MHE's h-state would sit at _arm_origin_z (in
+			// NED-down meters) rather than near zero at launch.
 			if (lpos.xy_global && lpos.z_global) {
-				_sensor.set_gps_origin(lpos.ref_lat, lpos.ref_lon, (double)lpos.ref_alt);
-				_actual_launch_alt_msl = lpos.ref_alt;
+				const float arm_alt_msl = lpos.ref_alt + (-_arm_origin_z);
+				_sensor.set_gps_origin(lpos.ref_lat, lpos.ref_lon, (double)arm_alt_msl);
+				_actual_launch_alt_msl = arm_alt_msl;
 				_launch_alt_captured = true;
-				PX4_INFO("GPS origin (from lpos ref): lat=%.6f lon=%.6f alt=%.1f",
-					 lpos.ref_lat, lpos.ref_lon, (double)lpos.ref_alt);
+				PX4_INFO("GPS origin (from lpos ref): lat=%.6f lon=%.6f ref_alt=%.1f arm_alt=%.1f",
+					 lpos.ref_lat, lpos.ref_lon, (double)lpos.ref_alt, (double)arm_alt_msl);
 
 			} else {
 				// lpos ref not yet available — DO NOT fall back to
@@ -708,6 +721,13 @@ void RocketMPC::Run()
 		_arm_origin_y = 0.0f;
 		_arm_origin_z = 0.0f;
 
+		// Zero the SensorBridge NED origin too, so any HITL/SITL
+		// update_from_lpos() calls between disarm and the next arm
+		// use the EKF2 origin frame (same as the pre-arm bring-up
+		// path at the top of Run()). Without this, _ned_origin_* would
+		// still hold the previous flight's arm offset.
+		_sensor.set_ned_origin(0.0f, 0.0f, 0.0f);
+
 		// Mirror the arm-time reset on disarm. Without this, _launched
 		// stays true and the MPC/actuator publish path at the bottom
 		// of Run() keeps driving the servos while the vehicle is
@@ -739,12 +759,21 @@ void RocketMPC::Run()
 			_arm_origin_y = lpos.y;
 			_arm_origin_z = lpos.z;
 
+			// Keep SensorBridge's NED origin in sync with the (possibly
+			// updating) arm origin so HITL/SITL update_from_lpos() stays
+			// in the same frame as Xm/Ym/Zm. See set_ned_origin() doc.
+			_sensor.set_ned_origin(_arm_origin_x, _arm_origin_y, _arm_origin_z);
+
 			// Update GPS origin for MHE
 			if (_hitl || _param_sitl_gps.get() == 1) {
-				// HITL/SITL: update from lpos reference
+				// HITL/SITL: update from lpos reference, using the arm
+				// altitude MSL (ref_alt shifted by lpos.z at arm) so MHE's
+				// launch_alt parameter matches the height frame produced by
+				// update_from_lpos() after the NED-origin offset is applied.
 				if (lpos.xy_global && lpos.z_global) {
-					_sensor.set_gps_origin(lpos.ref_lat, lpos.ref_lon, (double)lpos.ref_alt);
-					_actual_launch_alt_msl = lpos.ref_alt;
+					const float arm_alt_msl = lpos.ref_alt + (-_arm_origin_z);
+					_sensor.set_gps_origin(lpos.ref_lat, lpos.ref_lon, (double)arm_alt_msl);
+					_actual_launch_alt_msl = arm_alt_msl;
 					_launch_alt_captured = true;
 				}
 
@@ -849,27 +878,19 @@ void RocketMPC::Run()
 			x0_mhe[IX_R]     = sc.gyro_rad[2];
 			x0_mhe[IX_PHI]   = euler0.phi();
 			// IX_XG / IX_YG must live in the same frame as the GPS measurements
-			// fed to MHE by SensorBridge:
-			//   SITL/HITL (update_from_lpos): _gps_north = lpos.x
-			//       → MHE state is absolute NED from the EKF2 local origin
-			//       → seed with _arm_origin_{x,y} (= lpos.{x,y} at arm)
-			//   Real flight (update_gps): _gps_north = (lat-ref_lat)·M_LAT
-			//       and ref is re-latched to the current GPS fix at arm time,
-			//       so measurements start at 0 at arm
-			//       → seed with 0.0
-			// Previous unconditional use of _arm_origin_{x,y} left a bias
-			// on real-GPS flights whenever the EKF2 local origin did not
-			// coincide with the arming position.
-			x0_mhe[IX_H] = 0.0;
-
-			if (_hitl || _param_sitl_gps.get() == 1) {
-				x0_mhe[IX_XG] = (double)(_arm_origin_x / X_SCALE);
-				x0_mhe[IX_YG] = (double)(_arm_origin_y / Y_SCALE);
-
-			} else {
-				x0_mhe[IX_XG] = 0.0;
-				x0_mhe[IX_YG] = 0.0;
-			}
+			// fed to MHE by SensorBridge. Both paths are now arm-relative:
+			//   SITL/HITL (update_from_lpos): _gps_north = lpos.x - _ned_origin_x
+			//       with _ned_origin set to _arm_origin at arm
+			//       → measurements start at 0 at arm
+			//   Real flight (update_gps): _gps_north = (lat-ref_lat)·M_LAT with
+			//       ref re-latched to the current GPS fix at arm
+			//       → measurements start at 0 at arm
+			// So seed IX_XG = IX_YG = 0 in every mode. Any non-zero seed here
+			// would create an immediate residual against the near-zero GPS
+			// measurement and bias the first MHE solves.
+			x0_mhe[IX_H]  = 0.0;
+			x0_mhe[IX_XG] = 0.0;
+			x0_mhe[IX_YG] = 0.0;
 
 			// Biases + wind: zero
 			_mhe.init_state(x0_mhe);
@@ -1271,14 +1292,15 @@ void RocketMPC::Run()
 					// rotation error equal to the current position magnitude
 					// whenever bearing ≠ 0. Re-derive in the same frame used
 					// at launch init (see frame explanation there).
-					if (_hitl || _param_sitl_gps.get() == 1) {
-						x0_reset[IX_XG] = (double)(lpos.x / X_SCALE);
-						x0_reset[IX_YG] = (double)(lpos.y / Y_SCALE);
-
-					} else {
-						x0_reset[IX_XG] = (double)((lpos.x - _arm_origin_x) / X_SCALE);
-						x0_reset[IX_YG] = (double)((lpos.y - _arm_origin_y) / Y_SCALE);
-					}
+					// Arm-relative in every mode: SensorBridge::update_from_lpos
+					// now subtracts the arm NED origin for HITL/SITL too, so
+					// IX_XG/IX_YG live in the same (arm-relative) frame as the
+					// real-flight path. The previous HITL/real split used to
+					// re-seed MHE in the EKF2-origin frame while the MPC side
+					// used arm-relative, which left a constant _arm_origin
+					// offset after every XVAL reset.
+					x0_reset[IX_XG] = (double)((lpos.x - _arm_origin_x) / X_SCALE);
+					x0_reset[IX_YG] = (double)((lpos.y - _arm_origin_y) / Y_SCALE);
 
 					_mhe.reinit_state(x0_reset);
 
