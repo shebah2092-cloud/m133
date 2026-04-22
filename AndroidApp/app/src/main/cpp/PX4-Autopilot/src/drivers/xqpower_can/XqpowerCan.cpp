@@ -1108,9 +1108,18 @@ void XqpowerCan::_servo_init_sequence()
 
 	PX4_INFO("NMT Start sent to all servos");
 
-	/* Step 2: Configure report interval */
+	/* Step 2: Configure report interval (from XQCAN_FB_MS param).
+	 * Driver clamps <10 ms up to 10 ms; we clamp >255 ms down so the
+	 * uint8_t CAN payload byte doesn't wrap.
+	 */
+	int32_t fb_ms_param = _param_fb_interval_ms.get();
+	if (fb_ms_param < 10)  { fb_ms_param = 10; }
+	if (fb_ms_param > 255) { fb_ms_param = 255; }
+	const uint8_t fb_interval_ms = (uint8_t)fb_ms_param;
+	PX4_INFO("Configuring PDO auto-report interval: %u ms (XQCAN_FB_MS)",
+		 (unsigned)fb_interval_ms);
 	for (int i = 0; i < XQPOWER_MAX_SERVOS; i++) {
-		servo_set_report_interval(i, 50);
+		servo_set_report_interval(i, fb_interval_ms);
 		px4_usleep(20000);
 	}
 

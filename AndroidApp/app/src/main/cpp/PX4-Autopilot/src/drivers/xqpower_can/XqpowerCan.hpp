@@ -190,6 +190,7 @@ private:
 		(ParamInt<px4::params::XQCAN_NODE3>)   _param_node3,
 		(ParamInt<px4::params::XQCAN_NODE4>)   _param_node4,
 		(ParamFloat<px4::params::XQCAN_LIMIT>) _param_angle_limit,
-		(ParamInt<px4::params::XQCAN_REV>)     _param_reverse
+		(ParamInt<px4::params::XQCAN_REV>)     _param_reverse,
+		(ParamInt<px4::params::XQCAN_FB_MS>)   _param_fb_interval_ms
 	)
 };
