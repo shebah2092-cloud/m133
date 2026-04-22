@@ -431,7 +431,6 @@ static void start_px4_modules(const std::string& storage_path) {
                 { "ROCKET_APC_LIM",   8.0f  },
                 { "ROCKET_MAX_DEFL",  0.436f},
                 { "ROCKET_XTRGT",  3000.0f  },
-                { "ROCKET_YTRGT",     0.0f  },
                 { "ROCKET_ZTRGT",     0.0f  },
             };
             for (auto& rp : rocket_params) {
