@@ -306,28 +306,41 @@ MheOutput MheEstimator::update(float t)
 		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, k, "yref", yref_k);
 	}
 
-	// Parameters for each interval
-	// Set params for ALL stages (not just 0..N_use-1).  Stages beyond
-	// our measurement window still participate in the NLP dynamics and
-	// need valid mass/thrust/inertia parameters to avoid NaN.
+	// Parameters for each interval — ALIGNED WITH THE MEASUREMENT WINDOW.
+	//
+	// push_measurement() and push_params() are called atomically from
+	// RocketMPC::Run() inside the same `if (smeas.valid)` block, and the
+	// gap detector in push_measurement() flushes both ring buffers
+	// together, so _meas_head == _param_head and _meas_count == _param_count
+	// at all times.  That means the correct start index for params is the
+	// same `start_idx` used for the measurements above.
+	//
+	// The old code used `_param_head - _param_count` (the OLDEST sample in
+	// the buffer), which drifts up to (_param_count - n_use) * horizon_dt
+	// away from the measurement window.  Once the 64-slot buffer is
+	// saturated and n_use == horizon_steps + 1 == 21, the offset is
+	// 43 * 20 ms = 860 ms: stage-0 params (δ_e_act/δ_r_act/δ_a_act, mass,
+	// thrust, inertias) came from ~860 ms before the stage-0 measurement,
+	// so the solver evaluated aero forces with fin positions that didn't
+	// match the observation.  That biased α/β/b_gyro and inflated w_norm,
+	// pushing quality below qg_thr for no real reason.
+	//
+	// Stages [0, n_use-1] now take time-aligned params; stages beyond the
+	// measurement count (only reachable if min_init_meas < horizon_steps+1)
+	// repeat the newest params, mirroring the measurement loop above.
 	for (int k = 0; k < _cfg.horizon_steps; k++) {
 		double p_k[MHE_NP];
 
-		if (k < _param_count) {
-			int p_start = (_param_head - _param_count);
-
-			if (p_start < 0) { p_start += BUF_SIZE; }
-
-			int p_idx = (p_start + k) % BUF_SIZE;
+		if (k < n_use) {
+			int p_idx = (start_idx + k) % BUF_SIZE;
 			memcpy(p_k, _param_buf[p_idx].p, MHE_NP * sizeof(double));
 
-		} else {
-			// Use last available params for stages beyond buffer
-			int p_last = (_param_head - 1) % BUF_SIZE;
-
-			if (p_last < 0) { p_last += BUF_SIZE; }
-
+		} else if (_param_count > 0) {
+			int p_last = (_param_head - 1 + BUF_SIZE) % BUF_SIZE;
 			memcpy(p_k, _param_buf[p_last].p, MHE_NP * sizeof(double));
+
+		} else {
+			memset(p_k, 0, sizeof(p_k));
 		}
 
 		m130_mhe_acados_update_params(_capsule, k, p_k, MHE_NP);
