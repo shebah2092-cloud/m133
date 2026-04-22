@@ -62,7 +62,10 @@ struct MpcConfig {
 };
 
 struct MpcSolveResult {
-	float fins[4];         // X-fin deflections (normalized)
+	// NOTE: the solver returns the three virtual-channel commands (delta_e,
+	// delta_r, delta_a). The X-fin mixing + per-fin saturation clamp lives
+	// in RocketMPC.cpp so that the MHE back-solve sees the deflections the
+	// actuators actually executed, not the un-clamped mathematical mix.
 	float delta_e;         // elevator (rad)
 	float delta_r;         // rudder (rad)
 	float delta_a;         // aileron (rad)
@@ -121,7 +124,6 @@ private:
 	float _last_delta_e{0.0f};
 	float _last_delta_r{0.0f};
 	float _last_delta_a{0.0f};
-	float _last_fins[4]{};
 	float _last_solve_t{-1.0f};
 	float _last_solve_time_ms{0.0f};
 
