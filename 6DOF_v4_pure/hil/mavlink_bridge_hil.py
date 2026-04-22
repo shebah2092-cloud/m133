@@ -286,19 +286,22 @@ def build_hil_state_quat(t_us: int, quat, omega,
 # ─── Parsers ─────────────────────────────────────────────────────────────────
 
 def parse_actuator_controls(payload: bytes) -> Optional[dict]:
-    """HIL_ACTUATOR_CONTROLS (msg 93): time_usec + flags + 16 floats + mode."""
-    if len(payload) < 32:
+    """HIL_ACTUATOR_CONTROLS (msg 93): time_usec(u64) + flags(u64) + 16 floats + mode(u8).
+
+    MAVLink v2 قد يقلّص الأصفار اللاحقة على حدود بايت (ليس حقل)، لذلك
+    نُبَطِّن إلى الحجم الكامل (81 بايت) قبل فك التحزيم. الإصدار السابق كان
+    يعتمد على fallback يحسب ``n = (len-16)//4`` ويتجاهل bytes تقصير غير
+    مُحاذية (مثل تقصير وسط float)، فكان يعيد قيم أصفار مزيّفة بدلاً من
+    القيم الحقيقية. باستخدام تبطين صريح نقرأ الصيغة الكاملة دائماً.
+    """
+    if len(payload) < 16:
         return None
+    FULL = 81
+    if len(payload) < FULL:
+        payload = payload + b"\x00" * (FULL - len(payload))
     try:
-        if len(payload) >= 81:
-            v = struct.unpack("<QQ16fB", payload[:81])
-            return {"t_us": v[0], "controls": list(v[2:18])}
-        n = (len(payload) - 16) // 4
-        fmt = f"<QQ{min(n, 16)}f"
-        sz = struct.calcsize(fmt)
-        v = struct.unpack(fmt, payload[:sz])
-        c = list(v[2:]) + [0.0] * (16 - min(n, 16))
-        return {"t_us": v[0], "controls": c}
+        v = struct.unpack("<QQ16fB", payload[:FULL])
+        return {"t_us": v[0], "controls": list(v[2:18])}
     except struct.error:
         return None
 
@@ -1168,6 +1171,12 @@ class HILBridge:
                         abort_reason = "tracking_error"
                 else:
                     self._servo_safety_breach = 0
+            else:
+                # فيدباك غير قابل للاستخدام (grace/hold/stale) → الفحص
+                # غير مُطبَّق لأن المرجع الحقيقي مفقود. نُصفّر العدّاد حتى
+                # لا يتراكم من فترات hold ثم يُشعل abort مزيّفاً بمجرد
+                # عودة الفيدباك وخطأ كبير (متوقع بعد فجوة).
+                self._servo_safety_breach = 0
 
             try:
                 next_state, snap, t_end, _ = sim._integrate_one_step(state, t, dt, _ctrl)
@@ -1316,8 +1325,13 @@ class HILBridge:
         PARAM_VALUE إذا وصل، أو ``None`` عند انتهاء المهلة.
         """
         t_end = time.monotonic() + timeout_s
+        # GPS كل ~100ms (10Hz) أثناء الانتظار للحفاظ على GPS fix في EKF2.
+        # بدون ذلك، انتظار PARAM_VALUE الطويل قد يُسقط GPS timeout (~1s)
+        # ويُلوّث تهيئة التقدير.
+        next_gps = 0.0
         while time.monotonic() < t_end and self._running:
-            self._sim_t_us = int(time.monotonic() * 1e6)
+            now = time.monotonic()
+            self._sim_t_us = int(now * 1e6)
             self._send(build_heartbeat())
             s = self._static_sensors(state)
             self._send(build_hil_sensor(
@@ -1326,6 +1340,13 @@ class HILBridge:
                 s["mag_body"], s["baro_p"],
                 s["diff_p"], s["pressure_alt"],
             ))
+            if now >= next_gps:
+                self._send(build_hil_gps(
+                    self._sim_t_us,
+                    self.launch_lat, self.launch_lon, self.launch_alt,
+                    0, 0, 0,
+                ))
+                next_gps = now + 0.1
             self._drain_target(dt)
 
             with self._param_lock:
@@ -1410,6 +1431,7 @@ class HILBridge:
 
         t_end = time.monotonic() + timeout_s
         next_send = 0.0
+        next_gps = 0.0
         attempts = 0
         set_ok = False
         param_set_bytes = build_param_set("SYS_HITL", 1, MAV_PARAM_TYPE_INT32)
@@ -1417,7 +1439,7 @@ class HILBridge:
 
         while time.monotonic() < t_end and self._running:
             now = time.monotonic()
-            self._sim_t_us = int(time.monotonic() * 1e6)
+            self._sim_t_us = int(now * 1e6)
             self._send(build_heartbeat())
             s = self._static_sensors(state)
             self._send(build_hil_sensor(
@@ -1426,6 +1448,16 @@ class HILBridge:
                 s["mag_body"], s["baro_p"],
                 s["diff_p"], s["pressure_alt"],
             ))
+            # GPS كل 100ms للحفاظ على GPS fix أثناء retry loop (قد يمتد
+            # إلى hitl_param_timeout_s=5s). بدونه، EKF2 قد يُعلن GPS fault
+            # ويؤخّر تهيئة navigation estimator.
+            if now >= next_gps:
+                self._send(build_hil_gps(
+                    self._sim_t_us,
+                    self.launch_lat, self.launch_lon, self.launch_alt,
+                    0, 0, 0,
+                ))
+                next_gps = now + 0.1
 
             if now >= next_send:
                 if not self._send_via_timing(param_set_bytes):
@@ -1580,24 +1612,26 @@ class HILBridge:
         online_mask = int(data[12]) & 0xFF
         tx_fail = int(data[13])
 
-        # أثناء المعايرة: اجمع العيّنات الخام (قبل أي طرح offset) — مع قناع
-        # online_mask الحالي لاستبعاد القنوات offline لاحقاً per-channel.
-        if self._zero_calib_active:
-            with self._servo_fb_lock:
+        # فحص حالة المعايرة + أي كتابة لحالة السيرفو يتم داخل قفل
+        # واحد لتجنّب TOCTOU: لو فحصنا ``_zero_calib_active`` خارج القفل
+        # ثم عاد المعايِر وألغاها ونسخ العيّنات قبل أن نُحرز القفل، كان
+        # append سيذهب إلى list مُفرَّغة (العيّنة تُفقد) أو نرجع مبكراً
+        # ولا نُحدّث فيدباك flight loop رغم انتهاء المعايرة.
+        zero_off_deg = np.degrees(self._servo_zero_offset_rad)
+        fb_deg = fb_deg_raw - zero_off_deg
+        err_deg = cmd_deg - fb_deg
+        fb_mono_ns = time.monotonic_ns()
+        with self._servo_fb_lock:
+            if self._zero_calib_active:
+                # أثناء المعايرة: اجمع العيّنات الخام (قبل أي طرح offset)
+                # مع قناع online_mask الحالي لاستبعاد القنوات offline لاحقاً per-channel.
                 self._zero_calib_samples.append(
                     (fb_deg_raw.copy(), online_mask & 0x0F)
                 )
                 self._servo_online_mask = online_mask
                 self._servo_tx_fail = tx_fail
-            return
-
-        # في الوضع العادي: طرح offset ثم حساب err بعد المعايرة
-        zero_off_deg = np.degrees(self._servo_zero_offset_rad)
-        fb_deg = fb_deg_raw - zero_off_deg
-        err_deg = cmd_deg - fb_deg
-
-        fb_mono_ns = time.monotonic_ns()
-        with self._servo_fb_lock:
+                return
+            # في الوضع العادي: طرح offset ثم حساب err بعد المعايرة
             self._servo_cmd_fb_rad = np.radians(cmd_deg)
             self._servo_fb_rad = np.radians(fb_deg)
             self._servo_fb_t_us = self._sim_t_us   # للحفاظ على التوافق (يستخدم للعرض/CSV)
