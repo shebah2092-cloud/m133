@@ -41,8 +41,14 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 # ============================================================================
 
 def run_baseline(sim_config_path: str | None = None,
-                 output_csv: str | None = None) -> str:
-    """يشغّل المحاكاة المستقلة (Python + MPC الداخلي) كمرجع ذهبي."""
+                 output_csv: str | None = None,
+                 duration_s: float | None = None,
+                 dt_s: float | None = None) -> str:
+    """يشغّل المحاكاة المستقلة (Python + MPC الداخلي) كمرجع ذهبي.
+
+    يقبل ``duration_s``/``dt_s`` من pil_config لضمان تطابق طول baseline وPIL،
+    تفادياً لمقارنة صامتة على ``t_max = min(...)`` منحرفة.
+    """
     import tempfile
 
     from rocket_6dof_sim import Rocket6DOFSimulation, export_comprehensive_log
@@ -60,8 +66,10 @@ def run_baseline(sim_config_path: str | None = None,
     long_range = cfg.get("long_range", {}).get("enabled", False)
     sim = Rocket6DOFSimulation(config_file=tmp.name, long_range_mode=long_range)
 
-    duration = cfg.get("simulation", {}).get("duration", 500.0)
-    dt = cfg.get("simulation", {}).get("dt", 0.01)
+    duration = float(duration_s) if duration_s is not None else \
+        cfg.get("simulation", {}).get("duration", 500.0)
+    dt = float(dt_s) if dt_s is not None else \
+        cfg.get("simulation", {}).get("dt", 0.01)
 
     t0 = time.monotonic()
 
@@ -171,6 +179,10 @@ def load_csv(path: str) -> dict:
 # المقارنة: baseline ↔ PIL فقط
 # ============================================================================
 
+# الحد الأدنى لعيّنات مشتركة حتّى نعتبر المقارنة صالحة (يمنع مرور زائف على نقطتين)
+_MIN_COMMON_SAMPLES = 100
+
+
 def compare(baseline_csv: str, pil_csv: str, timing_csv: str | None,
             thresholds: dict) -> dict:
     print()
@@ -197,7 +209,20 @@ def compare(baseline_csv: str, pil_csv: str, timing_csv: str | None,
     def ip(key):
         return np.interp(t_common, t_p, pil[key]) if key in pil else np.zeros_like(t_common)
 
-    m: dict = {"t_final_base": float(t_b[-1]), "t_final_pil": float(t_p[-1])}
+    m: dict = {
+        "t_final_base": float(t_b[-1]),
+        "t_final_pil": float(t_p[-1]),
+        "t_common_max": float(t_max),
+        "n_common": int(len(t_common)),
+    }
+
+    if len(t_common) < _MIN_COMMON_SAMPLES:
+        print(f"  ERROR: عينات مشتركة أقل من {_MIN_COMMON_SAMPLES} "
+              f"(t_base={t_b[-1]:.1f}s, t_pil={t_p[-1]:.1f}s). "
+              "الهدف غالباً انقطع باكراً أو لم يُنتج بيانات.")
+        m["pass"] = False
+        m["error"] = "insufficient_common_samples"
+        return m
 
     # ارتفاع
     a_err = ip("altitude") - ib("altitude")
@@ -227,10 +252,15 @@ def compare(baseline_csv: str, pil_csv: str, timing_csv: str | None,
             np.max(np.abs(roll_err)),
         ))
 
-    # CEP عند الاصطدام
+    # CEP عند محاذاة زمنية موحّدة (t_max المشترك)، ليس آخر نقطة من كلّ ملف.
+    # سلوك آخر-نقطة يُقارن نقطتين في زمنين مختلفين إذا انتهت إحداهما مبكّراً (مضلّل).
     if all(k in base and k in pil for k in ("pos_x", "pos_y")):
-        dx = float(pil["pos_x"][-1] - base["pos_x"][-1])
-        dy = float(pil["pos_y"][-1] - base["pos_y"][-1])
+        base_x = np.interp(t_max, t_b, base["pos_x"])
+        base_y = np.interp(t_max, t_b, base["pos_y"])
+        pil_x = np.interp(t_max, t_p, pil["pos_x"])
+        pil_y = np.interp(t_max, t_p, pil["pos_y"])
+        dx = float(pil_x - base_x)
+        dy = float(pil_y - base_y)
         m["cep_m"] = float(np.sqrt(dx * dx + dy * dy))
 
     # نطاق
@@ -238,8 +268,10 @@ def compare(baseline_csv: str, pil_csv: str, timing_csv: str | None,
         r_err = ip("ground_range") - ib("ground_range")
         m["range_mae"] = float(np.mean(np.abs(r_err)))
 
-    # التوقيت
-    timing = _analyze_timing(timing_csv) if timing_csv and Path(timing_csv).exists() else {}
+    # التوقيت (مع تمرير deadline_us من العتبات بدلاً من ثابت 20000)
+    deadline_us = int(thresholds.get("timing", {}).get("deadline_us", 20000))
+    timing = _analyze_timing(timing_csv, deadline_us=deadline_us) \
+        if timing_csv and Path(timing_csv).exists() else {}
     m["timing"] = timing
 
     # بوابة
@@ -249,7 +281,7 @@ def compare(baseline_csv: str, pil_csv: str, timing_csv: str | None,
     return m
 
 
-def _analyze_timing(path: str) -> dict:
+def _analyze_timing(path: str, deadline_us: int = 20000) -> dict:
     cyc, mpc, mhe = [], [], []
     with open(path, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
@@ -267,6 +299,7 @@ def _analyze_timing(path: str) -> dict:
             return {}
         return {
             "min": float(a.min()), "mean": float(a.mean()),
+            "std": float(a.std()),
             "p50": float(np.percentile(a, 50)),
             "p95": float(np.percentile(a, 95)),
             "p99": float(np.percentile(a, 99)),
@@ -278,7 +311,8 @@ def _analyze_timing(path: str) -> dict:
         "mhe_us": stats(mhe),
         "mpc_us": stats(mpc),
         "cycle_us": stats(cyc),
-        "deadline_miss": int(sum(1 for c in cyc if c > 20000)),
+        "deadline_miss": int(sum(1 for c in cyc if c > deadline_us)),
+        "deadline_us": int(deadline_us),
     }
 
 
@@ -293,16 +327,25 @@ def _gate(m: dict, th: dict) -> bool:
         ok = False
     if m.get("altitude_mae", 0) > vb.get("altitude_mae_max", 1e9):
         ok = False
+    if "altitude_max_err_max" in vb:
+        if m.get("altitude_max_err", 0) > vb["altitude_max_err_max"]:
+            ok = False
     if m.get("cep_m", 0) > vb.get("cep_max_m", 1e9):
         ok = False
 
     t = m.get("timing", {})
     if t:
         mpc_p95 = t.get("mpc_us", {}).get("p95", 0)
+        mpc_p99 = t.get("mpc_us", {}).get("p99", 0)
         cyc_p95 = t.get("cycle_us", {}).get("p95", 0)
+        cyc_std = t.get("cycle_us", {}).get("std", 0)
         if mpc_p95 > tg.get("mpc_p95_max_us", 1e9):
             ok = False
+        if mpc_p99 > tg.get("mpc_p99_max_us", 1e9):
+            ok = False
         if cyc_p95 > tg.get("cycle_p95_max_us", 1e9):
+            ok = False
+        if cyc_std > tg.get("jitter_std_max_us", 1e9):
             ok = False
         if t.get("deadline_miss", 0) > tg.get("deadline_miss_max", 0):
             ok = False
@@ -325,11 +368,14 @@ def _print_summary(m: dict, th: dict) -> None:
         print(f"    {mark} {name:22s} = {val:{fmt}}   (limit {limit})")
 
     print()
-    print("  [baseline ↔ PIL]")
+    print(f"  [baseline ↔ PIL]  "
+          f"t_base={m.get('t_final_base', 0):.1f}s  "
+          f"t_pil={m.get('t_final_pil', 0):.1f}s  "
+          f"n_common={m.get('n_common', 0)}")
     _chk("velocity_mae (m/s)",    m.get("velocity_mae"),    vb.get("velocity_mae_max"))
     _chk("attitude_max (deg)",    m.get("attitude_max_deg"), vb.get("attitude_max_deg"))
     _chk("altitude_mae (m)",      m.get("altitude_mae"),    vb.get("altitude_mae_max"))
-    _chk("altitude_max_err (m)",  m.get("altitude_max_err"), None)
+    _chk("altitude_max_err (m)",  m.get("altitude_max_err"), vb.get("altitude_max_err_max"))
     _chk("range_mae (m)",         m.get("range_mae"),       None)
     _chk("CEP (m)",               m.get("cep_m"),           vb.get("cep_max_m"))
 
@@ -337,13 +383,18 @@ def _print_summary(m: dict, th: dict) -> None:
     if t and t.get("samples", 0) > 0:
         print(f"\n  [timing] samples={t['samples']}  "
               f"deadline_miss={t['deadline_miss']}  "
-              f"(limit {tg.get('deadline_miss_max', 0)})")
+              f"(limit {tg.get('deadline_miss_max', 0)}, "
+              f"deadline_us={t.get('deadline_us', 20000)})")
         for stage in ("mhe_us", "mpc_us", "cycle_us"):
             s = t.get(stage, {})
             if s:
                 print(f"    {stage:10s} p50={s['p50']:7.1f}  "
                       f"p95={s['p95']:7.1f}  p99={s['p99']:7.1f}  "
-                      f"max={s['max']:7.1f}")
+                      f"max={s['max']:7.1f}  std={s.get('std', 0):7.1f}")
+        _chk("mpc_us.p95",   t.get("mpc_us", {}).get("p95"),   tg.get("mpc_p95_max_us"),   fmt=".1f")
+        _chk("mpc_us.p99",   t.get("mpc_us", {}).get("p99"),   tg.get("mpc_p99_max_us"),   fmt=".1f")
+        _chk("cycle_us.p95", t.get("cycle_us", {}).get("p95"), tg.get("cycle_p95_max_us"), fmt=".1f")
+        _chk("cycle_us.std", t.get("cycle_us", {}).get("std"), tg.get("jitter_std_max_us"), fmt=".1f")
     elif t:
         print("\n  [timing] no samples — verify target publishes timing messages")
 
@@ -376,8 +427,17 @@ def main():
     timing_csv = args.timing_csv or str(_RESULTS / out.get("timing_csv", "pil_timing.csv"))
     os.makedirs(_RESULTS, exist_ok=True)
 
+    # محاذاة طول/خطوة baseline مع PIL من pil_config.scenario (ليس sim_cfg)
+    scenario = cfg.get("scenario", {})
+    sim_cfg_path = scenario.get("sim_config")
+    if sim_cfg_path and not os.path.isabs(sim_cfg_path):
+        sim_cfg_path = str(_SIM_DIR / sim_cfg_path)
+    duration_s = float(scenario.get("duration_s", 500.0))
+    dt_s = float(scenario.get("dt_s", 0.01))
+
     if args.baseline_only:
-        run_baseline(output_csv=baseline_csv)
+        run_baseline(sim_config_path=sim_cfg_path, output_csv=baseline_csv,
+                     duration_s=duration_s, dt_s=dt_s)
         return
 
     if args.pil_only:
@@ -386,7 +446,8 @@ def main():
 
     if not args.compare_only:
         if not Path(baseline_csv).exists():
-            run_baseline(output_csv=baseline_csv)
+            run_baseline(sim_config_path=sim_cfg_path, output_csv=baseline_csv,
+                         duration_s=duration_s, dt_s=dt_s)
         else:
             print(f"[runner] reusing baseline: {baseline_csv}")
         run_pil(args.config, pil_csv, timing_csv)
