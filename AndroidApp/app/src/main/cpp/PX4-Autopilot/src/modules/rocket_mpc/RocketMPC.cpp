@@ -276,6 +276,7 @@ void RocketMPC::parameters_update(bool force)
 		mcfg.tf              = _param_mpc_tf.get();
 		mcfg.quality_gate_thr = _param_mhe_qg.get();
 		mcfg.cruise_progress = _param_cruise_p.get();
+		_los.set_cruise_progress(mcfg.cruise_progress);
 
 		// Recompute gamma_natural from current propulsion/launch params so
 		// LOS feedforward and MPC config stay consistent with the param set.
