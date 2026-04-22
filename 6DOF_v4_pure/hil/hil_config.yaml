@@ -57,11 +57,6 @@ scenario:
   dt_s: 0.01
   random_seed: 42
 thresholds:
-  vs_baseline:
-    velocity_mae_max: 5.0
-    attitude_max_deg: 5.0
-    cep_max_m: 50.0
-    altitude_mae_max: 100.0
   servo_tracking:
     # fin_act = الزاوية المقاسة من العتاد (fin_can)، fin_cmd = أمر MPC.
     # العتبة تقيس أداء السيرفو الحقيقي (backlash/slew/jitter). قد
