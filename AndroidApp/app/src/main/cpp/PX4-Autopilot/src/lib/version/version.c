@@ -393,6 +393,11 @@ uint64_t px4_mavlink_lib_version_binary(void)
 {
 	return MAVLINK_LIB_GIT_VERSION_BINARY;
 }
+#else
+uint64_t px4_mavlink_lib_version_binary(void)
+{
+	return 0;
+}
 #endif /* MAVLINK_LIB_GIT_VERSION_BINARY */
 
 uint64_t px4_os_version_binary(void)

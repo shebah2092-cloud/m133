@@ -70,21 +70,14 @@ function(px4_add_git_submodule)
 		file(RELATIVE_PATH REL_PATH ${PX4_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/${PATH})
 	endif()
 
-	execute_process(
-		COMMAND Tools/check_submodules.sh ${REL_PATH}
-		WORKING_DIRECTORY ${PX4_SOURCE_DIR}
-		)
-
 	string(REPLACE "/" "_" NAME ${PATH})
 	string(REPLACE "." "_" NAME ${NAME})
 
+	# Local build (no real git submodules): just touch the stamp.
 	add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
-		COMMAND Tools/check_submodules.sh ${REL_PATH}
 		COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
-		DEPENDS ${PX4_SOURCE_DIR}/.gitmodules ${PATH}/.git
-		COMMENT "git submodule ${REL_PATH}"
+		COMMENT "git submodule ${REL_PATH} (local, stubbed)"
 		WORKING_DIRECTORY ${PX4_SOURCE_DIR}
-		USES_TERMINAL
 		)
 
 	add_custom_target(${TARGET} DEPENDS git_init_${NAME}.stamp)

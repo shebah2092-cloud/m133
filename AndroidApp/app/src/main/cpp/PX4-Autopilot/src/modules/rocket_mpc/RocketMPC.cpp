@@ -936,7 +936,6 @@ void RocketMPC::Run()
 	// Default: use cached fins from last solve
 	float fin[4] = {_last_fins[0], _last_fins[1], _last_fins[2], _last_fins[3]};
 	float delta_e = _last_de, delta_r = _last_dr, delta_a = _last_da;
-	int   mpc_status = -1;
 	float mpc_solve_ms = 0.0f;
 	float mhe_solve_ms = 0.0f;
 	float mhe_quality = 0.0f;
@@ -1521,7 +1520,7 @@ void RocketMPC::Run()
 					for (int i = 0; i < 4; i++) {
 						fin[i] = math::constrain(fin_raw[i], -max_d, max_d);
 
-						if (fin[i] != fin_raw[i]) {
+						if (fin_raw[i] > max_d || fin_raw[i] < -max_d) {
 							_fin_clamp_count[i]++;
 							any_clamped = true;
 						}
@@ -1563,7 +1562,6 @@ void RocketMPC::Run()
 					_last_dr = (-fin[0] + fin[1] + fin[2] - fin[3]) * 0.25f;
 				}
 
-				mpc_status   = res.status;
 				mpc_solve_ms = res.solve_time_ms;
 
 				// Snapshot MPC diagnostics for telemetry
