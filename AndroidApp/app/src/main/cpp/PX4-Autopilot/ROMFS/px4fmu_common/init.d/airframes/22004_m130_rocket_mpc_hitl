@@ -28,7 +28,7 @@ param set SYS_HITL 1
 
 # ---- Rocket MPC parameters ----
 # Target X (downrange, m) uses ROCKET_XTRGT default from rocket_mpc_params.c.
-param set ROCKET_T_CTRL      0.2
+param set ROCKET_T_CTRL      0.3
 
 # ---- XQPOWER CAN servo parameters ----
 param set XQCAN_ENABLE     1

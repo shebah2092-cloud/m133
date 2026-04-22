@@ -38,7 +38,7 @@ param set CBRK_FLIGHTTERM 121212
 # in mpc_controller.cpp to match the acados OCP code-generated solver.
 
 # Control start delay after launch detection (s)
-param set-default ROCKET_T_CTRL      0.2
+param set-default ROCKET_T_CTRL      0.3
 
 # Target X (downrange, m) uses ROCKET_XTRGT default from rocket_mpc_params.c.
 
