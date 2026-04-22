@@ -8614,7 +8614,7 @@ static constexpr param_info_s parameters[] = {
 
 	{
 		.name = "ROCKET_T_CTRL",
-		.val = { .f = 0.5 },
+		.val = { .f = 0.3 },
 	},
 
 	{

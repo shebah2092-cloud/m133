@@ -420,7 +420,7 @@ static void start_px4_modules(const std::string& storage_path) {
             // -- Rocket GNC Parameters — M130 --
             struct { const char* name; float val; } rocket_params[] = {
                 { "ROCKET_T_STG1",   15.0f  },
-                { "ROCKET_T_CTRL",    0.2f  },
+                { "ROCKET_T_CTRL",    0.3f  },
                 { "ROCKET_SET_ALT", 120.0f  },
                 { "ROCKET_NPN",       2.7f  },
                 { "ROCKET_IMP_ANG", -30.0f  },

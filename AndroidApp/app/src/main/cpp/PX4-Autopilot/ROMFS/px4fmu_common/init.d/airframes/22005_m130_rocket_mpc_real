@@ -48,7 +48,7 @@ param set BAT1_N_CELLS 6
 param set BAT1_V_DIV 74.74
 
 # ---- Rocket MPC parameters ----
-param set-default ROCKET_T_CTRL      0.2
+param set-default ROCKET_T_CTRL      0.3
 
 # Target X (downrange, m) uses ROCKET_XTRGT default from rocket_mpc_params.c.
 
