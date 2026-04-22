@@ -937,7 +937,7 @@ class HILBridge:
                 "        ثم أعد التشغيل يدوياً من التطبيق وأعد تشغيل HIL.)\n"
                 "    2) simulator_mavlink لم يبدأ على 4560 (تحقق من dmesg/logcat).\n"
                 "    3) rocket_mpc لم يُنشر actuator_outputs_sim (تحقق من armed).\n"
-                "  لتعطيل هذا الفحص (غير مُوصى): hil.abort_on_no_actuator=false"
+                "  لتعطيل هذا الفحص (غير مُوصى): warmup.abort_on_no_actuator=false"
             )
 
         print("[HIL] Starting flight loop (realtime)...")
