@@ -562,9 +562,12 @@ class HILBridge:
               f"start PX4 on target device...")
         self._sock, addr = srv.accept()
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        # non-blocking دائمًا بعد القبول — _recv_nonblock يعتمد على هذا
-        # بدلاً من تبديل blocking state في كل استدعاء.
-        self._sock.setblocking(False)
+        # نُبقي الـ socket blocking افتراضياً. _recv_nonblock يُبدّل الحالة
+        # مؤقتاً لقراءة واحدة ثم يعيدها لـ blocking — كلاهما يُستدعى من
+        # الخيط الرئيسي فقط، لذا لا يلزم قفل. إبقاء blocking ضروري لأن
+        # _send يستخدم sendall() الذي يرفع BlockingIOError على non-blocking
+        # socket حين يمتلئ TCP send buffer، فيُعدّ هذا disconnect خاطئاً.
+        # (نفس نمط pil/mavlink_bridge_pil.py المُثبت.)
         srv.close()
         self._srv = None
         print(f"[HIL] Target connected from {addr}")
@@ -725,12 +728,14 @@ class HILBridge:
             self._running = False
 
     def _recv_nonblock(self) -> list:
-        # الـ socket مضبوط على non-blocking مرّة واحدة بعد accept()؛ لا حاجة
-        # لتبديل الحالة في كل استدعاء (anti-pattern سابق كان يُسرّب حالة بين
-        # _send/_recv إذا تداخلا من خيوط مختلفة).
+        # نُبدّل الـ socket إلى non-blocking لقراءة واحدة فقط ثم نُعيده
+        # إلى blocking. الإبقاء على blocking ضروري لـ sendall() في _send.
+        # _send و _recv_nonblock يُستدعيان من الخيط الرئيسي فقط (خيط
+        # 5760 له socket منفصل)، فلا حاجة لقفل هنا.
         if self._sock is None:
             return []
         try:
+            self._sock.setblocking(False)
             data = self._sock.recv(4096)
             if not data:
                 self._running = False
@@ -741,6 +746,12 @@ class HILBridge:
         except (ConnectionResetError, BrokenPipeError, OSError):
             self._running = False
             return []
+        finally:
+            if self._sock is not None:
+                try:
+                    self._sock.setblocking(True)
+                except OSError:
+                    pass
 
     # ─── بناء بيانات الحسّاسات ───────────────────────────────────────────────
 
