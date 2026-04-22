@@ -31,6 +31,17 @@
 #
 ############################################################################
 
+# rocket_mpc depends on acados + hpipm + blasfeo shared libraries
+# (libacados.so, libhpipm.so, libblasfeo.so) and on Linux/Android-only
+# scheduling APIs (sched_setaffinity, SYS_gettid, /sys/devices/.../cpu_capacity).
+# Dynamic linking and those APIs do not exist on NuttX targets (Pixhawk / STM32),
+# so this module is POSIX-only by design. Skip the entire build on NuttX to
+# prevent accidental enablement via a board Kconfig from breaking firmware builds.
+if("${PX4_PLATFORM}" STREQUAL "nuttx")
+	message(STATUS "rocket_mpc: skipped on NuttX (POSIX/Linux-only module)")
+	return()
+endif()
+
 # Paths to acados and generated solver code.
 #
 # Resolution order (first match wins):
