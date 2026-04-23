@@ -31,6 +31,22 @@
 #
 ############################################################################
 
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  DUAL-BUILD WARNING                                            ║
+# ║                                                                ║
+# ║  This CMakeLists.txt is used ONLY by the PX4 SITL/Linux build  ║
+# ║  (make px4_sitl_default).  It is NOT used by the Android NDK   ║
+# ║  build, which has its own parallel source list at:              ║
+# ║                                                                ║
+# ║    AndroidApp/app/src/main/cpp/CMakeLists.txt                  ║
+# ║    → PX4_SOURCES  (lines ~873-880)   module .cpp files         ║
+# ║    → m130_solvers  IMPORTED static lib (pre-built for arm64)   ║
+# ║                                                                ║
+# ║  If you ADD or REMOVE a source file here, you MUST also update ║
+# ║  the Android CMakeLists.txt, or the Android build will be      ║
+# ║  missing / carrying stale object files.                        ║
+# ╚══════════════════════════════════════════════════════════════════╝
+#
 # rocket_mpc depends on acados + hpipm + blasfeo shared libraries
 # (libacados.so, libhpipm.so, libblasfeo.so) and on Linux/Android-only
 # scheduling APIs (sched_setaffinity, SYS_gettid, /sys/devices/.../cpu_capacity).
@@ -49,9 +65,9 @@ endif()
 #   2. Environment variable (`ACADOS_ROOT`, `M130_SOLVER_ROOT`)
 #   3. Repo-relative default: `<m13>/acados-main` and `<m13>/c_generated_code`
 #
-# The repo root is 5 levels above PX4_SOURCE_DIR
-# (PX4-Autopilot/../../../../.. == AndroidApp/app/src/main/cpp/.. == m13).
-set(M13_REPO_ROOT "${PX4_SOURCE_DIR}/../../../../..")
+# The repo root is 6 levels above PX4_SOURCE_DIR:
+#   PX4-Autopilot / cpp / main / src / app / AndroidApp / → m13
+set(M13_REPO_ROOT "${PX4_SOURCE_DIR}/../../../../../..")
 
 if(NOT DEFINED ACADOS_ROOT)
 	if(DEFINED ENV{ACADOS_ROOT})

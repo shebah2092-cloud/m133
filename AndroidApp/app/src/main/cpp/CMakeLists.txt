@@ -871,6 +871,9 @@ list(APPEND PX4_SOURCES
 )
 
 # rocket_mpc — Rocket M130 MPC+MHE Control module (replaces former rocket_gnc)
+# NOTE: This source list must stay in sync with
+#   PX4-Autopilot/src/modules/rocket_mpc/CMakeLists.txt (SITL build).
+# If you add/remove a .cpp file, update BOTH places.
 list(APPEND PX4_SOURCES
     ${PX4_ROOT}/src/modules/rocket_mpc/RocketMPC.cpp
     ${PX4_ROOT}/src/modules/rocket_mpc/mpc_controller.cpp
@@ -925,6 +928,18 @@ add_library(px4phone_native SHARED ${OUR_SOURCES} ${PX4_SOURCES})
 
 # ===== acados ARM64 static libraries (MPC + MHE solver) =====
 set(ACADOS_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/acados_arm64/lib)
+
+# Verify pre-built arm64 static libraries exist.  These are gitignored (*.a)
+# and must be built once via the acados cross-compile step before the first
+# Android build.
+foreach(_lib acados hpipm blasfeo m130_solvers)
+    if(NOT EXISTS "${ACADOS_LIB_DIR}/lib${_lib}.a")
+        message(FATAL_ERROR
+            "Missing ${ACADOS_LIB_DIR}/lib${_lib}.a\n"
+            "The arm64 static libraries are not checked into git (*.a in .gitignore).\n"
+            "Build them first:  see acados-main/README or scripts/build_acados_android.sh")
+    endif()
+endforeach()
 
 add_library(acados STATIC IMPORTED)
 set_target_properties(acados PROPERTIES IMPORTED_LOCATION ${ACADOS_LIB_DIR}/libacados.a)

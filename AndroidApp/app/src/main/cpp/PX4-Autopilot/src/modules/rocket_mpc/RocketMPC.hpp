@@ -75,6 +75,9 @@ using matrix::Quatf;
 using matrix::Dcmf;
 using matrix::Vector3f;
 
+#ifdef MODULE_NAME
+#  undef MODULE_NAME
+#endif
 #define MODULE_NAME "rocket_mpc"
 
 class RocketMPC : public ModuleBase<RocketMPC>, public ModuleParams,

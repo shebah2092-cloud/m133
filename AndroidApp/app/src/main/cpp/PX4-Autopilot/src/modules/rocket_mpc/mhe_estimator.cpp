@@ -5,9 +5,10 @@
 #include <cmath>
 #include <drivers/drv_hrt.h>
 
-#ifndef MODULE_NAME
-# define MODULE_NAME "rocket_mpc"
+#ifdef MODULE_NAME
+#  undef MODULE_NAME
 #endif
+#define MODULE_NAME "rocket_mpc"
 #include <px4_platform_common/log.h>
 
 // ===================================================================
