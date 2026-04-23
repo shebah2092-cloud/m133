@@ -941,6 +941,18 @@ foreach(_lib acados hpipm blasfeo m130_solvers)
     endif()
 endforeach()
 
+# Verify MPC horizon N in the Android header matches the SITL reference (N=200).
+# A mismatch means the .a was cross-compiled with a different OCP than the header
+# used at Android compile time → silent buffer overrun or truncated horizon.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/m130_mpc/acados_solver_m130_rocket.h"
+     _mpc_n_line REGEX "^#define M130_ROCKET_N ")
+if(NOT "${_mpc_n_line}" MATCHES "200")
+    message(FATAL_ERROR
+        "M130_ROCKET_N mismatch in m130_mpc/acados_solver_m130_rocket.h\n"
+        "Expected N=200 (matching SITL c_generated_code).  Got: ${_mpc_n_line}\n"
+        "Copy headers from c_generated_code/ and rebuild libm130_solvers.a for arm64.")
+endif()
+
 add_library(acados STATIC IMPORTED)
 set_target_properties(acados PROPERTIES IMPORTED_LOCATION ${ACADOS_LIB_DIR}/libacados.a)
 

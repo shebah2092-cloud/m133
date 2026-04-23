@@ -8534,7 +8534,7 @@ static constexpr param_info_s parameters[] = {
 
 	{
 		.name = "ROCKET_THRUST",
-		.val = { .f = 893.474 },
+		.val = { .f = 0.0 },
 	},
 
 	{
