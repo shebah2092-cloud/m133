@@ -273,6 +273,7 @@ private:
 
 	// Baro staleness one-shot warning (reset on each flight)
 	bool _baro_stale_warned{false};
+	bool _mhe_frozen_warned{false};
 
 	// dt measurement
 	hrt_abstime _prev_run_time{0};

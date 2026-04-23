@@ -162,6 +162,15 @@ bool RocketMPC::init()
 
 	_hitl = (hitl_val == 1);
 
+	// Safety: force-disable ROCKET_SITL_GPS on real hardware to prevent
+	// silent loss of actuator_servos output if the param was left over
+	// from a previous SITL/HITL session.
+	if (!_hitl && _param_sitl_gps.get() == 1) {
+		PX4_ERR("ROCKET_SITL_GPS=1 on real hardware (SYS_HITL=0) — forcing to 0");
+		_param_sitl_gps.set(0);
+		_param_sitl_gps.commit_no_notification();
+	}
+
 	if (_hitl) {
 		_vehicle_attitude_sub       = uORB::Subscription{ORB_ID(vehicle_attitude_groundtruth)};
 		_vehicle_local_position_sub = uORB::Subscription{ORB_ID(vehicle_local_position_groundtruth)};
@@ -172,12 +181,24 @@ bool RocketMPC::init()
 	}
 
 	// Read all params once
-	const float mass_full      = _param_mass_full.get();
-	const float mass_dry       = _param_mass_dry.get();
+	float mass_full      = _param_mass_full.get();
+	float mass_dry       = _param_mass_dry.get();
 	const float burn_time      = _param_burn_time.get();
 	const float impulse        = _param_impulse.get();
 	const float thrust_override = _param_thrust.get();
-	const float t_tail         = _param_t_tail.get();
+	float t_tail         = _param_t_tail.get();
+
+	if (mass_full <= mass_dry) {
+		PX4_WARN("ROCKET_MASS_F (%.3f) <= ROCKET_MASS_D (%.3f) — clamping",
+			 (double)mass_full, (double)mass_dry);
+		mass_full = mass_dry + 0.01f;
+	}
+
+	if (t_tail > burn_time) {
+		PX4_WARN("ROCKET_T_TAIL (%.2f) > ROCKET_TBURN (%.3f) — clamping",
+			 (double)t_tail, (double)burn_time);
+		t_tail = burn_time;
+	}
 	const float target_x       = _param_xtrgt.get();
 	const float target_h       = _param_htrgt.get();
 	const float impact_ang_deg = _param_imp_ang.get();
@@ -305,6 +326,23 @@ void RocketMPC::parameters_update(bool force)
 		mcfg.t_tail            = _param_t_tail.get();
 		mcfg.mass_full         = _param_mass_full.get();
 		mcfg.mass_dry          = _param_mass_dry.get();
+		mcfg.Ixx_full = _param_ixx_f.get(); mcfg.Ixx_dry = _param_ixx_d.get();
+		mcfg.Iyy_full = _param_iyy_f.get(); mcfg.Iyy_dry = _param_iyy_d.get();
+		mcfg.Izz_full = _param_izz_f.get(); mcfg.Izz_dry = _param_izz_d.get();
+
+		// Guard: mass_full must exceed mass_dry (fuel mass > 0).
+		if (mcfg.mass_full <= mcfg.mass_dry) {
+			PX4_WARN("ROCKET_MASS_F (%.3f) <= ROCKET_MASS_D (%.3f) — clamping",
+				 (double)mcfg.mass_full, (double)mcfg.mass_dry);
+			mcfg.mass_full = mcfg.mass_dry + 0.01f;
+		}
+
+		// Guard: t_tail must not exceed burn_time (would make tailoff_start negative).
+		if (mcfg.t_tail > mcfg.burn_time) {
+			PX4_WARN("ROCKET_T_TAIL (%.2f) > ROCKET_TBURN (%.3f) — clamping",
+				 (double)mcfg.t_tail, (double)mcfg.burn_time);
+			mcfg.t_tail = mcfg.burn_time;
+		}
 
 		// Re-derive the plateau thrust so changes to ROCKET_IMPULS,
 		// ROCKET_TBURN or ROCKET_T_TAIL take effect on the next solve
@@ -438,6 +476,7 @@ void RocketMPC::_reset_flight_state()
 
 	// Baro staleness warning (allow re-warn on next flight)
 	_baro_stale_warned = false;
+	_mhe_frozen_warned = false;
 
 	// NOTE: _launch_alt_captured / _launch_pitch_captured are reset in
 	// the arming block (before the sensor-based capture runs), NOT here.
@@ -1030,6 +1069,15 @@ void RocketMPC::Run()
 			_mhe.push_params(t, mhe_p);
 		}
 
+		// One-shot warning: if MHE has zero solves 1 s after launch,
+		// it will likely stay frozen for the entire flight (no GPS).
+		if (t > 1.0f && _mhe.solve_count() == 0 && !_mhe_frozen_warned) {
+			_mhe_frozen_warned = true;
+			PX4_ERR("MHE has 0 solves at t=%.1f — frozen (no GPS?)", (double)t);
+			mavlink_log_critical(&_mavlink_log_pub,
+					     "MHE frozen: no solves after 1s — EKF2 only\t");
+		}
+
 		perf_begin(_mhe_perf);
 
 		if (_mhe.solve_count() < 3) {
@@ -1595,6 +1643,18 @@ void RocketMPC::Run()
 	}
 
 	// ---- Publish actuator outputs (always, to be sole authority) ----
+	// Final NaN guard: if any fin command is non-finite, zero ALL fins to
+	// prevent hardware damage.  NaN comparisons are always false, so the
+	// downstream constrain/clamp cannot catch them.
+	for (int i = 0; i < 4; ++i) {
+		if (!std::isfinite(fin[i])) {
+			PX4_ERR("NaN in fin[%d] — zeroing all fins", i);
+			fin[0] = fin[1] = fin[2] = fin[3] = 0.0f;
+			_last_fins[0] = _last_fins[1] = _last_fins[2] = _last_fins[3] = 0.0f;
+			break;
+		}
+	}
+
 	// HIL/SITL: publish radians to actuator_outputs_sim (XqpowerCan HIL branch expects rad).
 	// Real flight: publish normalized [-1,+1] to actuator_servos (XqpowerCan multiplies by _angle_limit).
 	{

@@ -28,7 +28,7 @@ struct MpcConfig {
 	// Horizon
 	int   N_horizon       = 200;
 	float tf              = 4.0f;
-	float t_ctrl          = 0.5f;
+	float t_ctrl          = 0.3f;
 
 	// Target
 	float target_x  = 2600.0f;

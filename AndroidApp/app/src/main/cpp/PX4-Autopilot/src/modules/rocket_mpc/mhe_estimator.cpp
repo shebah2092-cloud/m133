@@ -183,8 +183,8 @@ void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS], boo
 	// into a single window and the solver interprets the jump as giant
 	// process noise, corrupting the estimate before quality can gate it.
 	//
-	// Threshold 3 x horizon_dt tolerates normal scheduler jitter while
-	// catching any real discontinuity.  On detection we flush both the
+	// Threshold 5 x horizon_dt (100ms) tolerates Android scheduler spikes
+	// (PIL measured max 69ms) while catching any real discontinuity.  On detection we flush both the
 	// measurement and parameter ring buffers (kept in lockstep by
 	// RocketMPC.cpp) and invalidate the last output so downstream
 	// consumers cannot promote a stale estimate to authority.
@@ -192,7 +192,7 @@ void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS], boo
 		int last_idx = (_meas_head - 1 + BUF_SIZE) % BUF_SIZE;
 		float dt_actual = t - _meas_buf[last_idx].t;
 
-		if (dt_actual > 3.0f * _cfg.horizon_dt) {
+		if (dt_actual > 5.0f * _cfg.horizon_dt) {
 			// Snapshot validity BEFORE clearing it — the reseed block
 			// below needs to know whether _last_valid.x_hat was
 			// populated by a successful solve. Checking _last_valid.valid
