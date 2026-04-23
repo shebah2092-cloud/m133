@@ -227,6 +227,7 @@ private:
 	// m130_ocp_setup.py (requires regenerating the solver).
 	uint32_t _fin_clamp_count[4] {};   // per-fin activation count
 	uint32_t _fin_clamp_any{0};        // solves with >=1 fin clamped
+	uint32_t _fin_clamp_any_last{0};   // snapshot at last report (for delta check)
 	uint32_t _fin_clamp_solves{0};     // valid-solve denominator
 	uint32_t _fin_clamp_report_at{0};  // next solve index at which to print
 

@@ -1,5 +1,6 @@
 #include "sensor_bridge.h"
 #include <px4_platform_common/defines.h>   // PX4_ISFINITE
+#include <cmath>                           // fabs
 
 void SensorBridge::update_gps(const sensor_gps_s &gps)
 {
@@ -12,6 +13,10 @@ void SensorBridge::update_gps(const sensor_gps_s &gps)
 	if (!PX4_ISFINITE(gps.latitude_deg)
 	    || !PX4_ISFINITE(gps.longitude_deg)
 	    || !PX4_ISFINITE(gps.altitude_msl_m)) {
+		return;
+	}
+
+	if (fabs(gps.latitude_deg) > 90.0 || fabs(gps.longitude_deg) > 180.0) {
 		return;
 	}
 
@@ -31,10 +36,12 @@ void SensorBridge::update_gps(const sensor_gps_s &gps)
 	_gps_east    = (double)east_m;
 	_gps_alt_msl = gps.altitude_msl_m;
 
-	if (gps.vel_ned_valid
-	    && PX4_ISFINITE(gps.vel_n_m_s)
-	    && PX4_ISFINITE(gps.vel_e_m_s)
-	    && PX4_ISFINITE(gps.vel_d_m_s)) {
+	_gps_vel_valid = gps.vel_ned_valid
+		&& PX4_ISFINITE(gps.vel_n_m_s)
+		&& PX4_ISFINITE(gps.vel_e_m_s)
+		&& PX4_ISFINITE(gps.vel_d_m_s);
+
+	if (_gps_vel_valid) {
 		_gps_vn = (double)gps.vel_n_m_s;
 		_gps_ve = (double)gps.vel_e_m_s;
 		_gps_vd = (double)gps.vel_d_m_s;
@@ -77,8 +84,10 @@ void SensorBridge::update_from_lpos(const vehicle_local_position_s &lpos)
 	// resulting y[9] stays consistent with the MHE launch_alt parameter.
 	_gps_alt_msl = _ref_alt_msl + (double)(-(lpos.z - _ned_origin_z));
 
-	if (lpos.v_xy_valid && lpos.v_z_valid
-	    && PX4_ISFINITE(lpos.vx) && PX4_ISFINITE(lpos.vy) && PX4_ISFINITE(lpos.vz)) {
+	_gps_vel_valid = lpos.v_xy_valid && lpos.v_z_valid
+		&& PX4_ISFINITE(lpos.vx) && PX4_ISFINITE(lpos.vy) && PX4_ISFINITE(lpos.vz);
+
+	if (_gps_vel_valid) {
 		_gps_vn = (double)lpos.vx;
 		_gps_ve = (double)lpos.vy;
 		_gps_vd = (double)lpos.vz;
@@ -95,14 +104,14 @@ void SensorBridge::update_baro(const vehicle_air_data_s &air)
 	if (!PX4_ISFINITE(air.baro_alt_meter)) { return; }
 
 	_baro_valid = true;
-	_last_baro_update_us = air.timestamp;
+	_last_baro_update_us = hrt_absolute_time();
 }
 
 SensorMeasurement SensorBridge::build_measurement(
 	const sensor_combined_s &sc,
 	const vehicle_air_data_s &air)
 {
-	SensorMeasurement m;
+	SensorMeasurement m{};
 
 	// Drop GPS validity if no update arrived within the staleness window.
 	// Prevents pushing frozen position/velocity into the MHE when the GPS
@@ -155,10 +164,11 @@ SensorMeasurement SensorBridge::build_measurement(
 	m.y[8]  = _gps_east;
 	m.y[9]  = _gps_alt_msl;
 
-	// GPS velocity (NED frame, m/s) — raw from GPS
-	m.y[10] = _gps_vn;
-	m.y[11] = _gps_ve;
-	m.y[12] = _gps_vd;
+	// GPS velocity (NED frame, m/s). When velocity is not valid, zero
+	// the slots so stale readings don't leak into the MHE measurement.
+	m.y[10] = _gps_vel_valid ? _gps_vn : 0.0;
+	m.y[11] = _gps_vel_valid ? _gps_ve : 0.0;
+	m.y[12] = _gps_vel_valid ? _gps_vd : 0.0;
 
 	// GPS freshness: true only if the underlying GPS timestamp actually
 	// changed since the previous build_measurement() call. At 50 Hz MPC

@@ -121,6 +121,7 @@ private:
 	double _gps_ve{0.0};
 	double _gps_vd{0.0};
 	bool   _gps_valid{false};
+	bool   _gps_vel_valid{false};  // velocity specifically valid (vel_ned_valid + finite)
 	hrt_abstime _last_gps_update_us{0};
 
 	// Baro staleness tracking (mirrors GPS pattern)

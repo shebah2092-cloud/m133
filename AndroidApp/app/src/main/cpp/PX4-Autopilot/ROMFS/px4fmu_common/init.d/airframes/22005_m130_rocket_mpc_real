@@ -13,15 +13,12 @@
 #   Mag  : IST8310 (I2C)
 #   Servos: XQPOWER CAN
 #
-# Parameters tuned for rocket_M130_v01_CFD68:
-#   mass_full=39.5 kg, mass_dry=27.0 kg, diameter=130 mm
+# Parameters tuned for Qabthah1 rocket model:
+#   mass_full=12.74 kg, mass_dry=11.11 kg
 #   Launch: 16.457°N 44.115°E  alt=1200 m MSL
 #
 
 . ${R}etc/init.d/rc.rocket_defaults
-
-# ---- Select MPC controller ----
-set ROCKET_APP rocket_mpc
 
 # Real hardware — use onboard sensors, NOT simulation
 param set SYS_HITL 0
@@ -36,9 +33,9 @@ param set SENS_EN_MAGSIM 0
 param set ROCKET_SITL_GPS 0
 
 # ---- Magnetometer — IST8310 on MicoAir H743 ----
-param set EKF2_MAG_TYPE    6    # init-only
-param set SYS_HAS_MAG      1
-param set EKF2_MAG_ACCLIM  30.0
+# rc.rocket_defaults sets MAG_TYPE=5 (none).  Real flight uses init-only (6)
+# so EKF2 latches heading from mag at startup then ignores it in flight.
+param set EKF2_MAG_TYPE    6    # init-only (overrides rc.rocket_defaults MAG_TYPE=5)
 
 # ---- Arming checks for rocket (no RC) ----
 # Real flight REQUIRES a GPS fix and a converged EKF2 state estimate before
@@ -70,6 +67,10 @@ param set EKF2_GPS_CHECK 1037
 # ---- Battery (6S LiPo, MicoAir H743 voltage divider) ----
 param set BAT1_N_CELLS 6
 param set BAT1_V_DIV 74.74
+
+# ---- XQPOWER CAN servo parameters ----
+param set-default XQCAN_ENABLE     1
+param set-default XQCAN_LIMIT     20.0    # ±20 deg (matches MPC fin limit)
 
 # ---- Rocket MPC parameters ----
 param set-default ROCKET_T_CTRL      0.3

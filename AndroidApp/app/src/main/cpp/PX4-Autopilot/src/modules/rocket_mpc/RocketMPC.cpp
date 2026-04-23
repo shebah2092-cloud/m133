@@ -82,6 +82,8 @@ static constexpr float SOLVER_TAU_SERVO_S = 0.025f;
 static float compute_gamma_natural(float total_impulse, float burn_time,
 				   float launch_pitch_deg, float mass_full)
 {
+	if (burn_time <= 1e-3f) { return 0.0f; }
+
 	float T_avg = total_impulse / burn_time;
 	float th = launch_pitch_deg * (float)M_PI / 180.0f;
 	float a_v = T_avg * sinf(th) - mass_full * 9.80665f;
@@ -143,6 +145,7 @@ RocketMPC::RocketMPC() :
 
 RocketMPC::~RocketMPC()
 {
+	_sensor_combined_sub.unregisterCallback();
 	ScheduleClear();
 	_mpc.destroy();
 	_mhe.destroy();
@@ -1193,12 +1196,17 @@ void RocketMPC::Run()
 			ekf_beta = atan2f(sinf(ekf_beta), cosf(ekf_beta));
 
 		} else {
-			ekf_gamma = euler.theta();
+			ekf_gamma = _pitch_from_quat(quat);  // gimbal-lock safe near ±90°
 			ekf_chi   = 0.0f;              // bearing-frame (low-V MPC fallback)
 			ekf_beta  = 0.0f;              // match Python: no sideslip when V is near zero
 		}
 
-		ekf_alpha = euler.theta() - ekf_gamma;
+		// Use the same pitch source as the branch that set ekf_gamma:
+		// _pitch_from_quat is gimbal-lock safe (for the low-V near-vertical
+		// regime); euler.theta() matches the Python reference for high-V.
+		const float pitch_for_alpha = (vm > 10.0f) ? euler.theta()
+							    : _pitch_from_quat(quat);
+		ekf_alpha = pitch_for_alpha - ekf_gamma;
 
 		// ----- MHE states (valid when mhe_authority) -----
 		float mhe_gamma = ekf_gamma, mhe_chi = ekf_chi;
@@ -1533,13 +1541,14 @@ void RocketMPC::Run()
 					// so steady-state flight stays silent. Persistent non-zero
 					// rates argue for adding polytopic on delta_*_s in the OCP.
 					if (_fin_clamp_solves >= _fin_clamp_report_at + 500) {
-						if (_fin_clamp_any > 0) {
+						if (_fin_clamp_any > _fin_clamp_any_last) {
 							PX4_INFO("MPC per-fin clamp: %u/%u solves (%u/%u/%u/%u per fin)",
 								 _fin_clamp_any, _fin_clamp_solves,
 								 _fin_clamp_count[0], _fin_clamp_count[1],
 								 _fin_clamp_count[2], _fin_clamp_count[3]);
 						}
 
+						_fin_clamp_any_last = _fin_clamp_any;
 						_fin_clamp_report_at = _fin_clamp_solves;
 					}
 
@@ -1709,10 +1718,10 @@ void RocketMPC::Run()
 		status.vel_crossrange = _mhe_publishing ? _mhe_vy : Vzm;
 
 		status.bearing_deg    = atan2f(_sin_bearing, _cos_bearing) * 180.0f / M_PI_F;
-		status.target_range_remaining = _target_downrange - Xm;
+		status.target_range_remaining = _target_downrange - (_mhe_publishing ? _mhe_x : Xm);
 		status.launched       = _launched;
 		status.dt_actual      = _dt_measured;
-		status.dt_min         = _dt_min;
+		status.dt_min         = (_dt_count > 0) ? _dt_min : 0.0f;
 		status.dt_max         = (_dt_count > 0) ? _dt_max : 0.0f;
 
 		// Servo mask — only trust fresh readings (< 500 ms old) so a
