@@ -120,6 +120,10 @@ param set SDLOG_MODE      0    # 0 = start logging when armed, stop on disarm
 param set SDLOG_BACKEND   3    # bit0=SD + bit1=MAVLink ULog streaming
 
 # ---- Control Allocator - X-fin rocket geometry ----
+# NOTE: CA_* params below are NOT used at runtime — control_allocator
+# is not started (rocket_mpc bypasses it and drives fins directly).
+# They exist solely for QGroundControl airframe UI rendering and as
+# documentation of the X-fin geometry.
 # CA_AIRFRAME=9 (Custom), no motors, 4 control surfaces.
 # Physical fin order: CS0=TR(fin1), CS1=BR(fin2), CS2=BL(fin3), CS3=TL(fin4)
 # X-fin mixing: CS0=TR: +R -P +Y | CS1=BR: +R -P -Y | CS2=BL: +R +P -Y | CS3=TL: +R +P +Y

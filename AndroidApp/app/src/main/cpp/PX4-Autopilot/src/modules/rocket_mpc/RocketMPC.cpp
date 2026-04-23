@@ -1788,30 +1788,20 @@ void RocketMPC::Run()
 		_rocket_gnc_status_pub.publish(status);
 	}
 
-	// Periodic dt logging
-	{
-		static uint32_t dt_log_count = 0;
-		static float    dt_log_sum   = 0.0f;
-		static float    dt_log_min   = 1.0f;
-		static float    dt_log_max   = 0.0f;
-		dt_log_sum += dt;
-		dt_log_min = fminf(dt_log_min, dt);
-		dt_log_max = fmaxf(dt_log_max, dt);
-		dt_log_count++;
-
-		if (dt_log_count >= 250) {  // every ~2.5s at 100Hz HIL, ~1.25s at 200Hz real
-			PX4_INFO("dt: avg=%.3f min=%.3f max=%.3f ms (%.0f Hz)  mpc=%.1fms mhe_q=%.2f",
-				 (double)(dt_log_sum / dt_log_count * 1000.0f),
-				 (double)(dt_log_min * 1000.0f),
-				 (double)(dt_log_max * 1000.0f),
-				 (double)(dt_log_count / dt_log_sum),
-				 (double)_mpc.last_solve_time_ms(),
-				 (double)mhe_quality);
-			dt_log_sum = 0.0f;
-			dt_log_min = 1.0f;
-			dt_log_max = 0.0f;
-			dt_log_count = 0;
-		}
+	// Periodic dt logging — reuse class members _dt_sum/_dt_min/_dt_max/_dt_count
+	// (already updated in the launched block above and reset in _reset_flight_state).
+	if (_dt_count >= 250) {  // every ~2.5s at 100Hz HIL, ~1.25s at 200Hz real
+		PX4_INFO("dt: avg=%.3f min=%.3f max=%.3f ms (%.0f Hz)  mpc=%.1fms mhe_q=%.2f",
+			 (double)(_dt_sum / _dt_count * 1000.0f),
+			 (double)(_dt_min * 1000.0f),
+			 (double)(_dt_max * 1000.0f),
+			 (double)(_dt_count / _dt_sum),
+			 (double)_mpc.last_solve_time_ms(),
+			 (double)mhe_quality);
+		_dt_sum = 0.0f;
+		_dt_min = 1.0f;
+		_dt_max = 0.0f;
+		_dt_count = 0;
 	}
 
 	// Cycle-timing previously published here as debug_vect("TIMING") has
