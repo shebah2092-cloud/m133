@@ -402,6 +402,9 @@ MpcSolveResult MpcController::solve(const double x_mpc[MPC_NX],
 		if (tf_use > _cfg.tf) { tf_use = _cfg.tf; }
 	}
 
+	// dt_h is the MPC's internal prediction stage (tf/N = 50ms).
+	// The actual control cadence is 20ms (see RocketMPC.cpp:947).
+	// This mismatch is a known design compromise — see docs/mpc_design.md.
 	float dt_h = tf_use / (float)N;
 
 	// Set initial state constraint

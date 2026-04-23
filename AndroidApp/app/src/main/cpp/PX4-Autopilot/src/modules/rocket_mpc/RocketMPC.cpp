@@ -201,7 +201,6 @@ bool RocketMPC::init()
 	mpc_cfg.N_horizon       = MPC_N;
 	mpc_cfg.tf              = _param_mpc_tf.get();
 	mpc_cfg.t_ctrl          = _param_t_ctrl.get();
-	mpc_cfg.dt_solve        = 0.02f;
 	mpc_cfg.target_x        = target_x;
 	mpc_cfg.target_h        = target_h;
 	mpc_cfg.mass_full       = mass_full;
@@ -981,13 +980,14 @@ void RocketMPC::Run()
 			// Update actual fin positions (first-order lag) BEFORE passing to MHE.
 			// MHE model expects delta_*_act (physical fin position), not the command.
 			{
-				// Guard: if tau_servo is misconfigured (=0) or dt is 0, the division
-				// would produce inf or NaN. Clamp tau to a minimum of 0.1 ms.
+				// Guard: if tau_servo is misconfigured (=0), the division would
+				// produce inf or NaN. Clamp tau to a minimum of 0.1 ms.
 				float tau = _mpc.config().tau_servo;
 
 				if (tau < 1e-4f) { tau = 1e-4f; }
 
-				float decay = expf(-dt / tau);
+				constexpr float MPC_PERIOD_S = 0.020f;
+				float decay = expf(-MPC_PERIOD_S / tau);
 				_de_act = _de_act * decay + delta_e * (1.0f - decay);
 				_dr_act = _dr_act * decay + delta_r * (1.0f - decay);
 				_da_act = _da_act * decay + delta_a * (1.0f - decay);

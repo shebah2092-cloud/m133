@@ -184,9 +184,9 @@ estimation:
 
   sensors:
     imu_rate_hz: 200.0
-    gps_rate_hz: 10.0
+    gps_rate_hz: 5.0
     baro_rate_hz: 25.0
-    gps_delay_s: 0.08
+    gps_delay_s: 0.200
     baro_delay_s: 0.03
     accel_noise_std: 0.08
     gyro_noise_std: 0.003
