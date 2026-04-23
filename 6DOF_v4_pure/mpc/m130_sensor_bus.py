@@ -3,7 +3,7 @@ Virtual Sensor Bus for M130 — generates multi-rate noisy measurements from tru
 
 Generates:
   - IMU (accel + gyro)  @ imu_rate_hz  (default 200 Hz)
-  - GPS (pos + vel)     @ gps_rate_hz  (default 10 Hz)
+  - GPS (pos + vel)     @ gps_rate_hz  (default 5 Hz)
   - Baro (altitude)     @ baro_rate_hz (default 25 Hz)
 
 Output: 13-element measurement vector aligned with MHE h(x):
@@ -36,7 +36,7 @@ class SensorBus:
 
         # Rates
         self._imu_rate = float(sensors.get("imu_rate_hz", 200.0))
-        self._gps_rate = float(sensors.get("gps_rate_hz", 10.0))
+        self._gps_rate = float(sensors.get("gps_rate_hz", 5.0))
         self._baro_rate = float(sensors.get("baro_rate_hz", 25.0))
 
         # GPS dropout window [t_start, t_end] — GPS reports stale during this window

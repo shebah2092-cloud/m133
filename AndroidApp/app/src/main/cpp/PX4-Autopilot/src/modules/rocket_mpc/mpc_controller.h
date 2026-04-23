@@ -15,7 +15,7 @@ extern "C" {
 static constexpr int MPC_NX = M130_ROCKET_NX;   // 18
 static constexpr int MPC_NU = M130_ROCKET_NU;    // 3
 static constexpr int MPC_NP = M130_ROCKET_NP;    // 2
-static constexpr int MPC_N  = M130_ROCKET_N;     // 80
+static constexpr int MPC_N  = M130_ROCKET_N;     // 200
 static constexpr int MPC_NY = M130_ROCKET_NY;    // 12
 static constexpr int MPC_NYN = M130_ROCKET_NYN;  // 9
 

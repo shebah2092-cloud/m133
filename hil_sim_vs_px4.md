@@ -68,7 +68,7 @@ flowchart LR
   PX4["📱 PX4"]
   SRV["🛞 Servos"]
 
-  LAP  ==TCP 4560<br/>HIL_SENSOR 100Hz<br/>HIL_GPS 10Hz<br/>HIL_STATE 50Hz==> PX4
+  LAP  ==TCP 4560<br/>HIL_SENSOR 100Hz<br/>HIL_GPS 5Hz<br/>HIL_STATE 50Hz==> PX4
   PX4  ==TCP 4560<br/>HIL_ACTUATOR_CONTROLS==> LAP
   PX4  ==TCP 5760<br/>DEBUG_FLOAT_ARRAY SRV_FB<br/>DEBUG_VECT TIMING==> LAP
   PX4  ==CAN 500kbps<br/>XQPOWER protocol==> SRV
@@ -181,7 +181,7 @@ sequenceDiagram
 
   Note over LAP: t = k·dt
   LAP->>PX4: HIL_SENSOR (accel, gyro, mag, baro)
-  LAP->>PX4: HIL_GPS (كل 100ms)
+  LAP->>PX4: HIL_GPS (كل 200ms)
   PX4->>PX4: EKF2 يحدّث الحالة
   PX4->>PX4: MHE + MPC → أمر
   PX4->>PX4: Control Allocation → 4 floats
@@ -215,7 +215,7 @@ gantt
   section Laptop → PX4 (4560)
   HIL_SENSOR 100Hz       :done, 0, 1000
   HIL_STATE_QUAT 50Hz    :active, 0, 1000
-  HIL_GPS 10Hz           :0, 1000
+  HIL_GPS 5Hz            :0, 1000
   HEARTBEAT 1Hz          :crit, 0, 1000
 
   section PX4 → Laptop (4560)
@@ -233,7 +233,7 @@ gantt
 | الرسالة | التردّد | الاتجاه | الغاية |
 |:---|:---:|:---:|:---|
 | `HIL_SENSOR` | **100 Hz** | L → P | تغذّي EKF2 (IMU + baro + mag) |
-| `HIL_GPS` | 10 Hz | L → P | تغذّي EKF2 (موقع/سرعة) |
+| `HIL_GPS` | 5 Hz | L → P | تغذّي EKF2 (موقع/سرعة) |
 | `HIL_STATE_QUATERNION` | 50 Hz | L → P | ground truth فقط (لا EKF) |
 | `HEARTBEAT` | 1 Hz | L → P | حياة الوصلة |
 | `HIL_ACTUATOR_CONTROLS` | كل خطوة MPC | P → L | **fin_cmd** |

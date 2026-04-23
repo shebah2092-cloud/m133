@@ -1792,7 +1792,7 @@ void RocketMPC::Run()
 		dt_log_max = fmaxf(dt_log_max, dt);
 		dt_log_count++;
 
-		if (dt_log_count >= 250) {  // every ~5s at 50Hz
+		if (dt_log_count >= 250) {  // every ~2.5s at 100Hz HIL, ~1.25s at 200Hz real
 			PX4_INFO("dt: avg=%.3f min=%.3f max=%.3f ms (%.0f Hz)  mpc=%.1fms mhe_q=%.2f",
 				 (double)(dt_log_sum / dt_log_count * 1000.0f),
 				 (double)(dt_log_min * 1000.0f),

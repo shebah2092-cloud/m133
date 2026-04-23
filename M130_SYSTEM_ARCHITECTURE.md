@@ -816,8 +816,8 @@ class MheOutput:
 | الجيروسكوب | 200 Hz | 0.003 rad/s | N(0, 0.005) ثابت | 0 |
 | التسارعميتر | 200 Hz | 0.08 m/s² | N(0, 0.1) ثابت | 0 |
 | البارومتر | 25 Hz | 1.2 m | — | 30 ms |
-| GPS موقع | 10 Hz | 2.5 m | — | 80 ms |
-| GPS سرعة | 10 Hz | 0.6 m/s | — | 80 ms |
+| GPS موقع | 5 Hz | 2.5 m | — | 80 ms |
+| GPS سرعة | 5 Hz | 0.6 m/s | — | 80 ms |
 
 ### ميزات خاصة
 
@@ -1013,7 +1013,7 @@ estimation:
   
   sensors:
     imu_rate_hz: 200
-    gps_rate_hz: 10
+    gps_rate_hz: 5
     baro_rate_hz: 25
     gyro_noise_std: 0.003
     accel_noise_std: 0.08

@@ -496,8 +496,8 @@ class SITLBridge:
         self.port = bridge_cfg.get('port', 4560)
         self.protocol = bridge_cfg.get('protocol', 'tcp')
         self.timing = bridge_cfg.get('timing', 'lockstep')
-        self.sensor_rate = bridge_cfg.get('sensor_rate_hz', 250)
-        self.gps_rate = bridge_cfg.get('gps_rate_hz', 10)
+        self.sensor_rate = bridge_cfg.get('sensor_rate_hz', 100)
+        self.gps_rate = bridge_cfg.get('gps_rate_hz', 5)
         self.state_rate = bridge_cfg.get('state_rate_hz', 50)
         self.lockstep_timeout_ms = bridge_cfg.get('lockstep_timeout_ms', 5000)
 
@@ -703,10 +703,8 @@ class SITLBridge:
         dt = self.sim_dt
 
         # Compute send intervals in simulation steps
-        # Use 100 Hz explicitly: with dt=0.01 the ceiling is 100 Hz (one
-        # HIL_SENSOR per sim step).  The config sensor_rate_hz is ignored
-        # here to avoid the 250→0.4→max(1,0)=1 confusion (see HIL bridge).
-        sensor_interval = max(1, int(round(1.0 / (100 * dt))))
+        # Note: with dt=0.01 the ceiling is 100 Hz (one HIL_SENSOR per sim step).
+        sensor_interval = max(1, int(round(1.0 / (self.sensor_rate * dt))))
         gps_interval = max(1, int(round(1.0 / (self.gps_rate * dt))))
         state_interval = max(1, int(round(1.0 / (self.state_rate * dt))))
 
