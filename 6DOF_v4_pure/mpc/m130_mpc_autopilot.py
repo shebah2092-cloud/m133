@@ -269,6 +269,8 @@ class MpcController:
 
         p0 = self._impact_blend_start  # 0.93
         p1 = self._impact_blend_end    # 0.995
+        if p1 <= p0 + 1e-3:
+            p1 = p0 + 0.05  # guard: prevent div-by-zero
         if progress < p0:
             k_impact = 0.0
         elif progress > p1:
@@ -280,7 +282,8 @@ class MpcController:
         gamma_ref = (1.0 - k_impact) * gamma_los + k_impact * impact_rad
 
         # Clamp to safe range
-        gamma_ref = max(math.radians(-45.0), min(math.radians(15.0), gamma_ref))
+        gamma_min = math.radians(min(-45.0, self._impact_angle_deg))
+        gamma_ref = max(gamma_min, min(math.radians(15.0), gamma_ref))
 
         # --- Heading: LOS to target (use true dx, not clamped) ---
         # Chi reference — use actual dx (with tiny guard). See los_guidance.cpp

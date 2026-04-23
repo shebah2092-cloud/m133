@@ -36,7 +36,7 @@
  * Rocket M130 MPC+MHE control module — replaces RocketGNC.
  *
  * Implements:
- *   - MPC controller (acados SQP_RTI, N=80, 18 states, 3 controls)
+ *   - MPC controller (acados SQP_RTI, N=200, 18 states, 3 controls)
  *   - MHE estimator  (acados, N=20, 17 states, sliding window)
  *   - LOS guidance   (geometric, feedforward only)
  *   - Sensor bridge   (uORB → MHE measurement vector)
@@ -1383,9 +1383,7 @@ void RocketMPC::Run()
 			PX4_INFO("LOS compute: cur_x=%.1f alt=%.1f t=%.3f", (double)cur_x, (double)cur_alt, (double)t);
 		}
 
-		LosResult los = _los.compute(cur_x, cur_y, cur_alt,
-					     _los.gamma_ref_prev(), _los.chi_ref_prev(),
-					     t, dt);
+		LosResult los = _los.compute(cur_x, cur_y, cur_alt, t, dt);
 
 		if (_mpc.solve_count() < 3) {
 			PX4_INFO("LOS done: gamma_ref=%.3f chi_ref=%.3f dx=%.1f",

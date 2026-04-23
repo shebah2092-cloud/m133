@@ -37,7 +37,6 @@ param set ROCKET_T_CTRL      0.3
 # ---- XQPOWER CAN servo parameters ----
 param set XQCAN_ENABLE     1
 param set XQCAN_LIMIT     20.0    # ±20 deg (matches MPC fin limit)
-param set XQCAN_REV       0
 
 # Stop pwm_out_sim — rocket_mpc publishes actuator_outputs_sim directly.
 pwm_out_sim stop

@@ -6,11 +6,10 @@
 #
 
 #
-# Start Control Allocator (X-fin mixer: CA_AIRFRAME=9 Custom, TRQ=±0.25).
-# Mathematical equivalence: pinv(0.25*E_xfin) = E_xfin^T, so CA output
-# matches the explicit X-fin formula exactly with no gain error.
+# rocket_mpc publishes actuator_servos directly (bypasses control_allocator).
+# control_allocator is NOT started — it would be idle (no torque_setpoint
+# publisher) and waste a thread + RAM on Android.
 #
-control_allocator start
 
 #
 # Start Rocket MPC (acados MPC+MHE controller).

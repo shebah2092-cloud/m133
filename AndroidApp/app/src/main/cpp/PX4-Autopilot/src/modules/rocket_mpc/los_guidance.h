@@ -14,9 +14,9 @@ struct LosConfig {
 };
 
 struct LosResult {
-	float gamma_ref;
-	float chi_ref;
-	float dx_to_target;
+	float gamma_ref{0.0f};
+	float chi_ref{0.0f};
+	float dx_to_target{0.0f};
 };
 
 class LosGuidance {
@@ -49,7 +49,6 @@ public:
 	}
 
 	LosResult compute(float x_pos, float y_pos, float altitude,
-			  float gamma_prev, float chi_prev,
 			  float t_flight, float dt);
 
 	float gamma_ref_prev() const { return _gamma_ref_prev; }
@@ -59,7 +58,7 @@ public:
 	void set_chi_prev(float c)   { _chi_ref_prev = c; }
 
 	void reset() {
-		_gamma_ref_prev = 0.0f;
+		_gamma_ref_prev = _cfg.gamma_natural_rad;
 		_chi_ref_prev = 0.0f;
 		_cruise_alt_target = 0.0f;
 		_cruise_alt_set = false;

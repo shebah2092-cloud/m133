@@ -18,7 +18,6 @@ void LosGuidance::configure(const LosConfig &cfg)
 }
 
 LosResult LosGuidance::compute(float x_pos, float y_pos, float altitude,
-			       float gamma_prev, float chi_prev,
 			       float t_flight, float dt)
 {
 	LosResult res;
@@ -49,6 +48,7 @@ LosResult LosGuidance::compute(float x_pos, float y_pos, float altitude,
 
 	float p0 = _cfg.impact_blend_start;
 	float p1 = _cfg.impact_blend_end;
+	if (p1 <= p0 + 1e-3f) { p1 = p0 + 0.05f; }  // guard: prevent div-by-zero
 	float k_impact;
 
 	if (progress < p0) {
@@ -64,7 +64,8 @@ LosResult LosGuidance::compute(float x_pos, float y_pos, float altitude,
 	float gamma_ref_los = (1.0f - k_impact) * gamma_los + k_impact * impact_rad;
 
 	// Clamp gamma_ref
-	if (gamma_ref_los < -45.0f * DEG2RAD) { gamma_ref_los = -45.0f * DEG2RAD; }
+	const float gamma_min = fminf(-45.0f, _cfg.impact_angle_deg) * DEG2RAD;
+	if (gamma_ref_los < gamma_min) { gamma_ref_los = gamma_min; }
 
 	if (gamma_ref_los >  15.0f * DEG2RAD) { gamma_ref_los =  15.0f * DEG2RAD; }
 
@@ -123,8 +124,8 @@ LosResult LosGuidance::compute(float x_pos, float y_pos, float altitude,
 	}
 	_last_t = t_flight;
 
-	static constexpr float MAX_GREF_RATE = 10.0f * DEG2RAD;
-	float max_dg = MAX_GREF_RATE * dt_internal;
+	static constexpr float MAX_REF_RATE = 10.0f * DEG2RAD;  // gamma & chi rate limit
+	float max_dg = MAX_REF_RATE * dt_internal;
 
 	float dg = gamma_ref_raw - _gamma_ref_prev;
 	float dc = chi_ref_raw   - _chi_ref_prev;
