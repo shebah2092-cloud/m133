@@ -160,5 +160,13 @@ SensorMeasurement SensorBridge::build_measurement(
 	m.y[11] = _gps_ve;
 	m.y[12] = _gps_vd;
 
+	// GPS freshness: true only if the underlying GPS timestamp actually
+	// changed since the previous build_measurement() call. At 50 Hz MPC
+	// cadence vs 10 Hz GPS, only 1 in 5 calls will see a fresh sample.
+	// MHE uses this to zero the GPS rows of W on stale stages, preventing
+	// repeated samples from inflating GPS confidence by √(stage_count).
+	m.gps_fresh = (_last_gps_update_us != _prev_gps_update_us);
+	_prev_gps_update_us = _last_gps_update_us;
+
 	return m;
 }

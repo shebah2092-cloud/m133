@@ -76,7 +76,7 @@ public:
 	void init_state(const double x0[MHE_NX]);
 	void reinit_state(const double x0[MHE_NX]);
 	void reset();
-	void push_measurement(float t, const double y_meas[MHE_NMEAS]);
+	void push_measurement(float t, const double y_meas[MHE_NMEAS], bool gps_fresh = true);
 	void push_params(float t, const double params[MHE_NP]);
 
 	MheOutput update(float t);
@@ -109,6 +109,7 @@ private:
 	struct MeasEntry {
 		float  t;
 		double y[MHE_NMEAS];
+		bool   gps_fresh;
 	};
 
 	struct ParamEntry {
@@ -124,4 +125,14 @@ private:
 	int _param_head{0};
 
 	MheOutput _last_valid{};
+
+	// Pre-computed weight matrices for GPS freshness gating.
+	// W = block_diag(R, Q) [MHE_NY × MHE_NY].
+	// W_stale has GPS rows/cols 7..12 zeroed so stale (repeated) GPS
+	// samples do not contribute to the cost.
+	double _W_fresh[MHE_NY * MHE_NY] {};
+	double _W_stale[MHE_NY * MHE_NY] {};
+	double _W0_fresh[MHE_NY0 * MHE_NY0] {};
+	double _W0_stale[MHE_NY0 * MHE_NY0] {};
+	bool   _W_cached{false};
 };

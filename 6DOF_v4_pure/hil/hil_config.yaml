@@ -62,7 +62,7 @@ thresholds:
     # العتبة تقيس أداء السيرفو الحقيقي (backlash/slew/jitter). قد
     # تحتاج لرفعها مع خصائص العتاد الواقعية.
     tracking_mae_max_deg: 1.5   # MAE (deg)
-    tracking_p95_max_deg: 3.0   # P95 خطأ تتبع (deg) — τ=15ms يسبب ~1.3° عند أمر مفاجئ
+    tracking_p95_max_deg: 3.0   # P95 خطأ تتبع (deg) — τ=25ms يسبب ~2.2° عند أمر مفاجئ
   timing:
     mpc_p95_max_us: 10000
     mpc_p99_max_us: 15000

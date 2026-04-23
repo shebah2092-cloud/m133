@@ -57,7 +57,7 @@ class MpcController:
         cfg = sim.config
         mpc_cfg = cfg.get('autopilot', {}).get('mpc', {})
 
-        self.N_horizon = mpc_cfg.get('N_horizon', 80)
+        self.N_horizon = mpc_cfg.get('N_horizon', 200)
         self.tf = mpc_cfg.get('tf', 4.0)
         self.t_ctrl = max(mpc_cfg.get('t_ctrl', 0.5), 0.2)
         self._dt_solve = mpc_cfg.get('dt_solve', 0.02)
@@ -93,7 +93,7 @@ class MpcController:
 
         act_cfg = cfg.get('actuator', {})
         self._tau_servo = max(act_cfg.get('tau_servo',
-                              mpc_cfg.get('tau_servo', 0.015)), 1e-4)
+                              mpc_cfg.get('tau_servo', 0.025)), 1e-4)
 
         launch_cfg = cfg.get('launch', {})
         pitch_deg = launch_cfg.get('attitude_degrees', [0, 15, 0])[1]

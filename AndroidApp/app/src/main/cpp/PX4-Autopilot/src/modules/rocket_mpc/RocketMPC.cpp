@@ -65,7 +65,7 @@ static constexpr float SOLVER_DELTA_MAX_RAD = 0.3490658503988659f;   // 20° in 
 // Servo time constant (first-order lag) baked into the acados solver's
 // internal servo dynamics model:
 //     delta_*_act_dot = (delta_*_s - delta_*_act) / tau_servo
-// See m130_acados_model.py::tau_servo_val (default 0.015) and
+// See m130_acados_model.py::tau_servo_val (default 0.025) and
 // Qabthah1/rocket_properties.yaml::actuator.tau_servo.
 // This constant MUST match the value the solver was generated with:
 //   - MpcController::_forward_guess uses it to propagate the warm-start
@@ -76,7 +76,7 @@ static constexpr float SOLVER_DELTA_MAX_RAD = 0.3490658503988659f;   // 20° in 
 //     the MHE force/moment prediction, silently corrupting alpha and
 //     gyro_bias estimates.
 // To change tau, regenerate the solver AND update this constant.
-static constexpr float SOLVER_TAU_SERVO_S = 0.015f;
+static constexpr float SOLVER_TAU_SERVO_S = 0.025f;
 
 // Natural gamma from thrust/mass/gravity (called with param values)
 static float compute_gamma_natural(float total_impulse, float burn_time,
@@ -975,7 +975,7 @@ void RocketMPC::Run()
 		// `quality = 0` path — safer than feeding the solver a 1200 m
 		// constant offset on every observation.
 		if (smeas.valid && _launch_alt_captured) {
-			_mhe.push_measurement(t, smeas.y);
+			_mhe.push_measurement(t, smeas.y, smeas.gps_fresh);
 
 			// Update actual fin positions (first-order lag) BEFORE passing to MHE.
 			// MHE model expects delta_*_act (physical fin position), not the command.

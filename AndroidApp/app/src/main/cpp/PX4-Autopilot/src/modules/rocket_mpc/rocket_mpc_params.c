@@ -293,7 +293,7 @@ PARAM_DEFINE_FLOAT(ROCKET_IZZ_D, 1.0779f);
  *  Servo dynamics
  *
  *  NOTE: The servo time constant is NOT a parameter — it is baked
- *  into the acados-generated solver at 0.015 s (Qabthah1 KST X20-7.4
+ *  into the acados-generated solver at 0.025 s (Qabthah1 KST X20-7.4
  *  electric servo). See m130_acados_model.py::tau_servo_val and
  *  SOLVER_TAU_SERVO_S in RocketMPC.cpp. Changing it requires
  *  regenerating the solver AND updating SOLVER_TAU_SERVO_S so the

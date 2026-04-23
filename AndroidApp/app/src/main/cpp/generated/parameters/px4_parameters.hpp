@@ -1956,12 +1956,12 @@ enum class params : uint16_t {
 	WV_ROLL_MIN,
 	WV_YRATE_MAX,
 	XQCAN_ENABLE,
+	XQCAN_FB_MS,
 	XQCAN_LIMIT,
 	XQCAN_NODE1,
 	XQCAN_NODE2,
 	XQCAN_NODE3,
 	XQCAN_NODE4,
-	XQCAN_REV,
 
 };
 
@@ -11683,6 +11683,11 @@ static constexpr param_info_s parameters[] = {
 	},
 
 	{
+		.name = "XQCAN_FB_MS",
+		.val = { .i = 10 },
+	},
+
+	{
 		.name = "XQCAN_LIMIT",
 		.val = { .f = 25.0 },
 	},
@@ -11707,10 +11712,6 @@ static constexpr param_info_s parameters[] = {
 		.val = { .i = 4 },
 	},
 
-	{
-		.name = "XQCAN_REV",
-		.val = { .i = 0 },
-	},
 
 };
 
@@ -13659,12 +13660,12 @@ static constexpr param_type_t parameters_type[] = {
 	PARAM_TYPE_FLOAT,
 	PARAM_TYPE_FLOAT,
 	PARAM_TYPE_INT32, // XQCAN_ENABLE
+	PARAM_TYPE_INT32, // XQCAN_FB_MS
 	PARAM_TYPE_FLOAT, // XQCAN_LIMIT
 	PARAM_TYPE_INT32, // XQCAN_NODE1
 	PARAM_TYPE_INT32, // XQCAN_NODE2
 	PARAM_TYPE_INT32, // XQCAN_NODE3
 	PARAM_TYPE_INT32, // XQCAN_NODE4
-	PARAM_TYPE_INT32, // XQCAN_REV
 };
 
 static constexpr params parameters_volatile[] = {

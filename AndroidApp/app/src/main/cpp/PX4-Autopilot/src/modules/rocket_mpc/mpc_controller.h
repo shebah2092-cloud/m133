@@ -26,7 +26,7 @@ static constexpr float Y_SCALE = 1000.0f;
 
 struct MpcConfig {
 	// Horizon
-	int   N_horizon       = 80;
+	int   N_horizon       = 200;
 	float tf              = 4.0f;
 	float t_ctrl          = 0.5f;
 
@@ -47,7 +47,7 @@ struct MpcConfig {
 	float Izz_full = 0.0f, Izz_dry = 0.0f;
 
 	// Servo
-	float tau_servo = 0.015f;
+	float tau_servo = 0.025f;
 
 	// Guidance
 	float impact_angle_deg     = -30.0f;

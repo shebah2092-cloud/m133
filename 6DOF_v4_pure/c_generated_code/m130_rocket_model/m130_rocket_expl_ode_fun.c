@@ -670,7 +670,7 @@ static int casadi_f0(const casadi_real** arg, casadi_real** res, casadi_int* iw,
   if (res[0]!=0) res[0][14]=a07;
   a07=arg[0]? arg[0][12] : 0;
   a07=(a07-a30);
-  a30=1.4999999999999999e-02;
+  a30=2.5000000000000001e-02;
   a07=(a07/a30);
   if (res[0]!=0) res[0][15]=a07;
   a07=arg[0]? arg[0][13] : 0;

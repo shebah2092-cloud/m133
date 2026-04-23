@@ -34,7 +34,7 @@ import casadi as ca
 from acados_template import AcadosModel
 
 
-def create_m130_model(launch_alt_val=1500.0, tau_servo_val=0.015,
+def create_m130_model(launch_alt_val=1500.0, tau_servo_val=0.025,
                       mass_full_val=12.74, mass_dry_val=11.11,
                       # Default inertias match
                       # data/rocket_models/Qabthah1/rocket_properties.yaml

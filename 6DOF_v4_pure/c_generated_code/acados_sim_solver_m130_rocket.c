@@ -73,7 +73,7 @@ int m130_rocket_acados_sim_create(m130_rocket_sim_solver_capsule * capsule)
     const int np = M130_ROCKET_NP;
     bool tmp_bool;
 
-    double Tsim = 0.05;
+    double Tsim = 0.02;
 
     capsule->acados_sim_mem = NULL;
 

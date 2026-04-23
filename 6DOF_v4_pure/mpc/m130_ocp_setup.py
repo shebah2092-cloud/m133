@@ -16,7 +16,7 @@ from m130_acados_model import create_m130_model
 
 
 def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
-                    launch_alt_val=1500.0, tau_servo_val=0.015,
+                    launch_alt_val=1500.0, tau_servo_val=0.025,
                     mass_full_val=12.74, mass_dry_val=11.11,
                     # Default inertias match
                     # data/rocket_models/Qabthah1/rocket_properties.yaml
@@ -45,7 +45,7 @@ def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
     # delta_e_act=15, delta_r_act=16, delta_a_act=17
     nx = 18
     nu = 3
-    N  = 80
+    N  = 200
 
     ocp = AcadosOcp()
     ocp.model = model

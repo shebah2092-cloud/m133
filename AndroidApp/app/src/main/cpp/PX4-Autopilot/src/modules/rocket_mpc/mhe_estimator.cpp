@@ -173,7 +173,7 @@ void MheEstimator::reset()
 // ===================================================================
 // Ring buffer push
 // ===================================================================
-void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS])
+void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS], bool gps_fresh)
 {
 	// Gap detection: the acados-generated MHE solver assumes every stage
 	// is spaced by exactly horizon_dt (20 ms).  If measurements stop (e.g.
@@ -234,6 +234,7 @@ void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS])
 	int idx = _meas_head % BUF_SIZE;
 	_meas_buf[idx].t = t;
 	memcpy(_meas_buf[idx].y, y_meas, MHE_NMEAS * sizeof(double));
+	_meas_buf[idx].gps_fresh = gps_fresh;
 	_meas_head++;
 
 	if (_meas_count < BUF_SIZE) { _meas_count++; }
@@ -304,6 +305,35 @@ MheOutput MheEstimator::update(float t)
 
 	if (start_idx < 0) { start_idx += BUF_SIZE; }
 
+	// ── GPS freshness gating: cache W matrices on first solve ──
+	// Read W and W_0 from the solver once, build "stale" variants with
+	// GPS rows/cols 7..12 zeroed. This prevents repeated GPS samples
+	// (50 Hz MHE vs 10 Hz GPS → 4/5 stages stale) from inflating
+	// position/velocity confidence by √(stage_count).
+	if (!_W_cached) {
+		ocp_nlp_cost_model_get(_nlp_config, _nlp_dims, _nlp_in, 1, "W", _W_fresh);
+		memcpy(_W_stale, _W_fresh, sizeof(_W_fresh));
+
+		for (int i = 7; i < 13; i++) {
+			for (int j = 0; j < MHE_NY; j++) {
+				_W_stale[i * MHE_NY + j] = 0.0;
+				_W_stale[j * MHE_NY + i] = 0.0;
+			}
+		}
+
+		ocp_nlp_cost_model_get(_nlp_config, _nlp_dims, _nlp_in, 0, "W", _W0_fresh);
+		memcpy(_W0_stale, _W0_fresh, sizeof(_W0_fresh));
+
+		for (int i = 7; i < 13; i++) {
+			for (int j = 0; j < MHE_NY0; j++) {
+				_W0_stale[i * MHE_NY0 + j] = 0.0;
+				_W0_stale[j * MHE_NY0 + i] = 0.0;
+			}
+		}
+
+		_W_cached = true;
+	}
+
 	// Stage 0: arrival cost + measurement + noise
 	{
 		int idx0 = start_idx % BUF_SIZE;
@@ -313,6 +343,8 @@ MheOutput MheEstimator::update(float t)
 		// w_noise = zeros → already zero
 		memcpy(&yref_0[MHE_NMEAS + MHE_NU], _x_bar, MHE_NX * sizeof(double));
 		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, 0, "yref", yref_0);
+		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, 0, "W",
+				      _meas_buf[idx0].gps_fresh ? _W0_fresh : _W0_stale);
 	}
 
 	// Stages 1..horizon_steps-1: measurement + noise
@@ -321,17 +353,22 @@ MheOutput MheEstimator::update(float t)
 	for (int k = 1; k < _cfg.horizon_steps; k++) {
 		double yref_k[MHE_NY]; // y_meas[13] + w_noise[17] = 30
 		memset(yref_k, 0, sizeof(yref_k));
+		bool fresh_k = false;
 
 		if (k < n_use) {
 			int idx_k = (start_idx + k) % BUF_SIZE;
 			memcpy(yref_k, _meas_buf[idx_k].y, MHE_NMEAS * sizeof(double));
+			fresh_k = _meas_buf[idx_k].gps_fresh;
 		} else {
 			// Use last available measurement
 			int idx_last = (_meas_head - 1 + BUF_SIZE) % BUF_SIZE;
 			memcpy(yref_k, _meas_buf[idx_last].y, MHE_NMEAS * sizeof(double));
+			fresh_k = false; // repeated → stale
 		}
 
 		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, k, "yref", yref_k);
+		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, k, "W",
+				      fresh_k ? _W_fresh : _W_stale);
 	}
 
 	// Parameters for each interval — ALIGNED WITH THE MEASUREMENT WINDOW.

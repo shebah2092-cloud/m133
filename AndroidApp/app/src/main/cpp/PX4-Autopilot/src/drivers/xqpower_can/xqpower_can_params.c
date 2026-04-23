@@ -71,22 +71,6 @@ PARAM_DEFINE_INT32(XQCAN_NODE4, 4);
  */
 PARAM_DEFINE_FLOAT(XQCAN_LIMIT, 20.0f);
 
-/**
- * Servo direction reverse bitmask
- *
- * Each bit reverses the corresponding servo direction.
- * bit0=servo0, bit1=servo1, bit2=servo2, bit3=servo3.
- * Example: 12 (0b1100) reverses servos 2 and 3.
- *
- * @min 0
- * @max 15
- * @bit 0 Reverse servo 0
- * @bit 1 Reverse servo 1
- * @bit 2 Reverse servo 2
- * @bit 3 Reverse servo 3
- * @group XQPOWER CAN
- */
-PARAM_DEFINE_INT32(XQCAN_REV, 0);
 
 /**
  * Servo PDO auto-report interval (ms)
@@ -97,7 +81,7 @@ PARAM_DEFINE_INT32(XQCAN_REV, 0);
  * USB-CH340 / PX4 parsing traffic.
  *
  * Guidance:
- *   50 ms (default): historical/proven value. 4 servos × 20 Hz ≈ 2 %
+ *   50 ms (historical): proven value for open-loop. 4 servos × 20 Hz ≈ 2 %
  *                    of a 500 kbps CAN bus.
  *   10 ms:           fastest supported by the driver. 4 servos × 100 Hz
  *                    ≈ 11 % bus load. Recommended for closed-loop HIL,
@@ -116,4 +100,4 @@ PARAM_DEFINE_INT32(XQCAN_REV, 0);
  * @reboot_required true
  * @group XQPOWER CAN
  */
-PARAM_DEFINE_INT32(XQCAN_FB_MS, 50);
+PARAM_DEFINE_INT32(XQCAN_FB_MS, 10);

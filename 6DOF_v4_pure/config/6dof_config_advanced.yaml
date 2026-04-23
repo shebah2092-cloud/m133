@@ -120,12 +120,11 @@ atmosphere:
 # ==========================================================================
 autopilot:
   mpc:
-    N_horizon: 80             # عدد خطوات الأفق
+    N_horizon: 200            # عدد خطوات الأفق (dt_h = tf/N = 4.0/200 = 0.020s = control cadence)
     tf: 4.0                   # s - أفق الزمن
     t_ctrl: 0.3               # s - زمن بدء التحكم بعد الإطلاق
     dt_solve: 0.02            # s - فترة استدعاء MPC (كل 20ms)
     delta_rate_limit_dps: 250.0  # deg/s - حد معدل تغيير الزعانف (أقل من actuator.rate_max=270)
-    cruise_gamma_deg: -1.0     # deg - زاوية مسار الطيران أثناء مرحلة الإبحار (أقل = مسار أفقي أكثر = مدى أبعد)
 
 # موقع الإطلاق (Launch Site) - المصدر الوحيد لارتفاع موقع الإطلاق
 launch:
@@ -239,8 +238,8 @@ bridge:
   host: "127.0.0.1"
   port: 4560              # PX4 SimulatorMavlink default port
   timing: lockstep        # lockstep | realtime
-  sensor_rate_hz: 250     # HIL_SENSOR (IMU) rate
-  gps_rate_hz: 10         # HIL_GPS rate
+  sensor_rate_hz: 100     # HIL_SENSOR (IMU) rate — ceiling with dt=0.01
+  gps_rate_hz: 5          # HIL_GPS rate — matches real NEO-M8N config
   state_rate_hz: 50       # HIL_STATE_QUATERNION rate
   lockstep_timeout_ms: 5000
 

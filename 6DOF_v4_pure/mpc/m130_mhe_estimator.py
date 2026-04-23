@@ -71,8 +71,23 @@ class MheEstimator:
             json_file="m130_mhe_ocp.json",
         )
 
+        # Pre-compute per-stage weight matrices for GPS freshness gating.
+        # W = block_diag(R, Q) [30×30];  W_0 = block_diag(R, Q, P0) [47×47]
+        # GPS occupies y[7..12] → R rows/cols 7..12 → W rows/cols 7..12.
+        # When GPS is stale (repeated sample), zero those entries so the
+        # solver ignores the duplicated GPS data and relies on IMU + baro
+        # + dynamics alone for that stage.
+        self._W_fresh = np.array(self._solver.acados_ocp.cost.W)      # 30×30
+        self._W_stale = self._W_fresh.copy()
+        self._W_stale[7:13, :] = 0.0
+        self._W_stale[:, 7:13] = 0.0
+        self._W0_fresh = np.array(self._solver.acados_ocp.cost.W_0)   # 47×47
+        self._W0_stale = self._W0_fresh.copy()
+        self._W0_stale[7:13, :] = 0.0
+        self._W0_stale[:, 7:13] = 0.0
+
         # Sliding window buffers
-        self._meas_buf = []    # list of (t, y_meas[13])
+        self._meas_buf = []    # list of (t, y_meas[13], gps_fresh)
         self._ctrl_buf = []    # list of (t, u_fins[3])
         self._param_buf = []   # list of (t, p_full[9])
 
@@ -115,9 +130,16 @@ class MheEstimator:
         for k in range(self._N):
             self._solver.set(k, "u", np.zeros(NW_MHE))
 
-    def push_measurement(self, t: float, y_meas: np.ndarray):
-        """Add a sensor measurement vector [13] to the sliding window."""
-        self._meas_buf.append((t, np.asarray(y_meas, dtype=float).ravel()))
+    def push_measurement(self, t: float, y_meas: np.ndarray, gps_fresh: bool = True):
+        """Add a sensor measurement vector [13] to the sliding window.
+
+        Args:
+            t: timestamp (s)
+            y_meas: measurement vector [13]
+            gps_fresh: True if GPS was updated this cycle (new sample),
+                       False if y[7..12] are a repeat of the previous sample.
+        """
+        self._meas_buf.append((t, np.asarray(y_meas, dtype=float).ravel(), gps_fresh))
 
     def push_control_and_params(self, t: float, u_fins: np.ndarray,
                                 params: np.ndarray):
@@ -165,9 +187,12 @@ class MheEstimator:
 
         # Stage 0: arrival cost + measurement + process noise
         y0 = meas_window[0][1]
+        gps_fresh_0 = meas_window[0][2] if len(meas_window[0]) > 2 else True
         x_bar = self._x_bar if self._x_bar is not None else np.zeros(NX_MHE)
         yref_0 = np.concatenate([y0, np.zeros(NW_MHE), x_bar])
         self._solver.set(0, "yref", yref_0)
+        # GPS freshness gating: use W_stale when GPS hasn't been updated
+        self._solver.cost_set(0, "W", self._W0_fresh if gps_fresh_0 else self._W0_stale)
 
         # Stages 1..N-1: measurement + noise.  Fill ALL intermediate stages
         # so the NLP cost is well-defined during startup when the window is
@@ -178,10 +203,14 @@ class MheEstimator:
         for k in range(1, self._N):
             if k < len(meas_window):
                 yk = meas_window[k][1]
+                gps_fresh_k = meas_window[k][2] if len(meas_window[k]) > 2 else True
             else:
                 yk = y_last
+                gps_fresh_k = False  # repeated → stale
             yref_k = np.concatenate([yk, np.zeros(NW_MHE)])
             self._solver.set(k, "yref", yref_k)
+            # GPS freshness gating
+            self._solver.cost_set(k, "W", self._W_fresh if gps_fresh_k else self._W_stale)
 
         # Parameters for every interval 0..N-1 plus the terminal node.
         # Same fallback as the measurement loop: after n_use samples, freeze

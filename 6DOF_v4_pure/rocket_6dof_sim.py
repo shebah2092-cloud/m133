@@ -3500,7 +3500,7 @@ class Rocket6DOFSimulation:
                 try:
                     # Always collect measurements from the start
                     pkt = self._sensor_bus.update(snapshot, t_end)
-                    self._mhe_estimator.push_measurement(t_end, pkt.y_meas)
+                    self._mhe_estimator.push_measurement(t_end, pkt.y_meas, gps_fresh=pkt.gps_fresh)
 
                     # Build MHE parameter vector [de_act, dr_act, da_act, mass, thrust, Ixx, Iyy, Izz, launch_alt]
                     # Use actual fin positions (from actuator model) instead of commands.

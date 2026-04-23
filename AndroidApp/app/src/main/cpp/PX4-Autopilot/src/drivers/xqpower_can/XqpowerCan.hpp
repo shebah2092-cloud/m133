@@ -145,7 +145,6 @@ private:
 	xqpower_feedback_t _feedback[XQPOWER_MAX_SERVOS]{};
 	bool               _report_started{false};
 	float              _angle_limit{20.0f};
-	uint8_t            _reverse_mask{0};
 
 	/* PX4 Subscriptions */
 	uORB::Subscription _actuator_servos_sub{ORB_ID(actuator_servos)};
@@ -187,7 +186,6 @@ private:
 		(ParamInt<px4::params::XQCAN_NODE3>)   _param_node3,
 		(ParamInt<px4::params::XQCAN_NODE4>)   _param_node4,
 		(ParamFloat<px4::params::XQCAN_LIMIT>) _param_angle_limit,
-		(ParamInt<px4::params::XQCAN_REV>)     _param_reverse,
 		(ParamInt<px4::params::XQCAN_FB_MS>)   _param_fb_interval_ms
 	)
 };

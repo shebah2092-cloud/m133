@@ -95,7 +95,6 @@ bool XqpowerCan::init()
 	_node_ids[2] = (uint8_t)_param_node3.get();
 	_node_ids[3] = (uint8_t)_param_node4.get();
 	_angle_limit   = _param_angle_limit.get();
-	_reverse_mask  = (uint8_t)(_param_reverse.get() & 0x0F);
 
 	/* Detect simulation mode once at startup from SYS_HITL.
 	 * In real flight (SYS_HITL=0) we MUST ignore actuator_outputs_sim
@@ -117,9 +116,9 @@ bool XqpowerCan::init()
 		}
 	}
 
-	PX4_INFO("XQPOWER CAN: Nodes=[0x%02X,0x%02X,0x%02X,0x%02X] Limit=%.1f deg Rev=0x%X Mode=%s",
+	PX4_INFO("XQPOWER CAN: Nodes=[0x%02X,0x%02X,0x%02X,0x%02X] Limit=%.1f deg Mode=%s",
 		 _node_ids[0], _node_ids[1], _node_ids[2], _node_ids[3],
-		 (double)_angle_limit, _reverse_mask,
+		 (double)_angle_limit,
 		 _sim_mode ? "HITL/SITL (sim topic allowed)"
 			   : "REAL FLIGHT (sim topic IGNORED)");
 
@@ -863,10 +862,6 @@ void XqpowerCan::servo_set_position(int index, float angle_deg)
 		return;
 	}
 
-	if (_reverse_mask & (1u << index)) {
-		angle_deg = -angle_deg;
-	}
-
 	if (angle_deg >  _angle_limit) { angle_deg =  _angle_limit; }
 	if (angle_deg < -_angle_limit) { angle_deg = -_angle_limit; }
 
@@ -1582,12 +1577,6 @@ int XqpowerCan::print_status()
 	PX4_INFO("  Armed: %s", _armed ? "YES" : "NO");
 	PX4_INFO("  Override: %s", _override_active.load(std::memory_order_acquire) ? "ACTIVE" : "off");
 	PX4_INFO("  Angle limit: %.1f deg", (double)_angle_limit);
-	PX4_INFO("  Reverse mask: 0x%X (S0=%s S1=%s S2=%s S3=%s)",
-		 _reverse_mask,
-		 (_reverse_mask & 1) ? "REV" : "---",
-		 (_reverse_mask & 2) ? "REV" : "---",
-		 (_reverse_mask & 4) ? "REV" : "---",
-		 (_reverse_mask & 8) ? "REV" : "---");
 	PX4_INFO("  TX fail count: %u", (unsigned)_tx_fail_count);
 
 #ifndef __PX4_POSIX

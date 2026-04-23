@@ -25,6 +25,7 @@ struct SensorMeasurement {
 	// y[10..12] = GPS velocity N, E, D (m/s)
 	bool valid;
 	bool baro_valid;  // false when baro data is stale (> BARO_STALE_TIMEOUT_US)
+	bool gps_fresh;   // true only when GPS was actually updated since last build_measurement()
 };
 
 class SensorBridge
@@ -125,4 +126,9 @@ private:
 	// Baro staleness tracking (mirrors GPS pattern)
 	bool   _baro_valid{false};
 	hrt_abstime _last_baro_update_us{0};
+
+	// GPS freshness: detect whether _last_gps_update_us changed between
+	// consecutive build_measurement() calls.  MHE uses this to avoid
+	// counting stale (repeated) GPS samples as independent measurements.
+	hrt_abstime _prev_gps_update_us{0};
 };

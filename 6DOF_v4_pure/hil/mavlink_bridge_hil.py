@@ -1076,12 +1076,12 @@ class HILBridge:
         # معدلات الإرسال:
         #   HIL_SENSOR  : 100Hz (سقف عملي محدَّد بـ dt؛ EKF2 يقبل 80Hz+).
         #   HIL_STATE   : 50Hz (ground-truth عرضي، لا يُغذّي EKF2).
-        #   HIL_GPS     : 10Hz (تحديث GPS قياسي).
+        #   HIL_GPS     : 5Hz (matches real NEO-M8N config).
         # الصيغة السابقة كانت `1.0/(250*dt)` التي تُنتج 0→max(1,0)=1 مع dt=0.01،
         # مُوهمة أن المعدّل 250Hz. الصيغة الجديدة صريحة: `1.0/(100*dt)` مع تعليق
         # يُبرز أن 100 هي سقف فعلي مع dt=0.01 (تجنّب M4 confusion).
         sensor_every = max(1, int(round(1.0 / (100 * dt))))
-        gps_every = max(1, int(round(1.0 / (10 * dt))))
+        gps_every = max(1, int(round(1.0 / (5 * dt))))   # 5 Hz — matches real NEO-M8N
         state_every = max(1, int(round(1.0 / (50 * dt))))
         hb_every = 100
 
