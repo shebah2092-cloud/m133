@@ -76,7 +76,8 @@ public:
 	void init_state(const double x0[MHE_NX]);
 	void reinit_state(const double x0[MHE_NX]);
 	void reset();
-	void push_measurement(float t, const double y_meas[MHE_NMEAS], bool gps_fresh = true);
+	void push_measurement(float t, const double y_meas[MHE_NMEAS], bool gps_fresh = true,
+			      bool gps_vel_valid = true);
 	void push_params(float t, const double params[MHE_NP]);
 
 	MheOutput update(float t);
@@ -110,6 +111,7 @@ private:
 		float  t;
 		double y[MHE_NMEAS];
 		bool   gps_fresh;
+		bool   gps_vel_valid;  // velocity specifically valid (vel_ned_valid + finite)
 	};
 
 	struct ParamEntry {
@@ -130,9 +132,15 @@ private:
 	// W = block_diag(R, Q) [MHE_NY × MHE_NY].
 	// W_stale has GPS rows/cols 7..12 zeroed so stale (repeated) GPS
 	// samples do not contribute to the cost.
+	// W_pos_only zeros velocity rows/cols 10..12 but keeps position 7..9,
+	// for the case where GPS has a 3D fix (valid position) but
+	// vel_ned_valid=false. Without this, y[10..12]=0 would get full
+	// weight and MHE would try to fit V=0 against a 200+ m/s trajectory.
 	double _W_fresh[MHE_NY * MHE_NY] {};
 	double _W_stale[MHE_NY * MHE_NY] {};
+	double _W_pos_only[MHE_NY * MHE_NY] {};
 	double _W0_fresh[MHE_NY0 * MHE_NY0] {};
 	double _W0_stale[MHE_NY0 * MHE_NY0] {};
+	double _W0_pos_only[MHE_NY0 * MHE_NY0] {};
 	bool   _W_cached{false};
 };

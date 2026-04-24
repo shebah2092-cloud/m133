@@ -307,8 +307,32 @@ void RocketMPC::parameters_update(bool force)
 		_parameter_update_sub.copy(&pupdate);
 		updateParams();
 
-		// Propagate runtime-changeable params to subsystems
 		MpcConfig &mcfg = _mpc.mutable_config();
+
+		// ============================================================
+		// PARAMETER FREEZE: after launch detection, flight-critical
+		// parameters (mass, propulsion, inertia, target geometry) are
+		// frozen at their launch-time values.  Only solver-tuning
+		// parameters that do not alter the physical model are allowed
+		// through.  This prevents an accidental MAVLink PARAM_SET from
+		// corrupting the thrust/mass schedule or trajectory mid-flight.
+		// ============================================================
+		if (_launched) {
+			// --- Tuning-only params: safe to change in-flight ---
+			mcfg.quality_gate_thr = _param_mhe_qg.get();
+			mcfg.tf              = _param_mpc_tf.get();
+
+			if (!_param_freeze_warned) {
+				_param_freeze_warned = true;
+				PX4_WARN("Params FROZEN: mass/propulsion/inertia/target locked for this flight");
+				mavlink_log_critical(&_mavlink_log_pub,
+						     "Params FROZEN for flight — critical params locked\t");
+			}
+
+			return;
+		}
+
+		// --- Pre-launch: propagate all params normally ---
 		mcfg.target_x        = _param_xtrgt.get();
 		mcfg.target_h        = _param_htrgt.get();
 		mcfg.impact_angle_deg = _param_imp_ang.get();
@@ -428,6 +452,7 @@ void RocketMPC::_reset_flight_state()
 	// disarm transitions.
 	memset(_fin_clamp_count, 0, sizeof(_fin_clamp_count));
 	_fin_clamp_any = 0;
+	_fin_clamp_any_last = 0;
 	_fin_clamp_solves = 0;
 	_fin_clamp_report_at = 0;
 
@@ -477,6 +502,7 @@ void RocketMPC::_reset_flight_state()
 	// Baro staleness warning (allow re-warn on next flight)
 	_baro_stale_warned = false;
 	_mhe_frozen_warned = false;
+	_param_freeze_warned = false;
 
 	// NOTE: _launch_alt_captured / _launch_pitch_captured are reset in
 	// the arming block (before the sensor-based capture runs), NOT here.
@@ -982,10 +1008,12 @@ void RocketMPC::Run()
 	float mhe_quality = 0.0f;
 	float gamma_ref = 0.0f, chi_ref = 0.0f;
 
-	// Rate-limit MPC/MHE solve to ~50Hz (20ms).  On intermediate
-	// sensor_combined ticks we republish the cached fins so that
-	// SimulatorMavlink lockstep can proceed.
-	const bool do_mpc_this_cycle = (now - _last_mpc_solve_time >= 19_ms);
+	// Rate-limit MPC/MHE solve to ~25Hz (40ms).  Measured on ARM64:
+	// MPC solve avg ~21ms, p95 ~44ms. At 50Hz (20ms deadline) we were
+	// missing >90% of deadlines, causing unfinished SQP iterations and
+	// degraded control. 25Hz gives ~2x headroom while control loop still
+	// runs at 50Hz via cached fins republished on every sensor tick.
+	const bool do_mpc_this_cycle = (now - _last_mpc_solve_time >= 39_ms);
 
 	if (_launched && t > _param_t_ctrl.get() && vm > 10.0f && do_mpc_this_cycle) {
 		_last_mpc_solve_time = now;
@@ -1017,7 +1045,7 @@ void RocketMPC::Run()
 		// `quality = 0` path — safer than feeding the solver a 1200 m
 		// constant offset on every observation.
 		if (smeas.valid && _launch_alt_captured) {
-			_mhe.push_measurement(t, smeas.y, smeas.gps_fresh);
+			_mhe.push_measurement(t, smeas.y, smeas.gps_fresh, smeas.gps_vel_valid);
 
 			// Update actual fin positions (first-order lag) BEFORE passing to MHE.
 			// MHE model expects delta_*_act (physical fin position), not the command.

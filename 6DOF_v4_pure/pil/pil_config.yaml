@@ -12,7 +12,15 @@ target:
     device: /dev/ttyACM0
     baud: 921600
 clock:
-  mode: realtime
+  # "lockstep" (recommended): ننتظر HIL_ACTUATOR_CONTROLS من PX4 قبل تقدّم
+  # الديناميكا. يُزيل TCP/scheduler jitter، يطابق سلوك Gazebo SITL، ويعطي
+  # نتائج قابلة للتكرار مستقلاً عن أداء realtime للجهاز.
+  # "realtime": pacing بـ wall-clock (قد يفشل إذا MPC latency > dt).
+  mode: lockstep
+  # MPC cycle rate للـ sync (يجب أن يطابق rate في RocketMPC.cpp ScheduleOnInterval).
+  mpc_cycle_hz: 25.0
+  # timeout لكل sync point — إذا MPC لم يرد، نتابع بـ last actuator.
+  lockstep_timeout_s: 1.0
   max_dropped_msgs: 10
 timing:
   enabled: true
@@ -23,7 +31,7 @@ warmup:
   # المدة القصوى لانتظار تسليم PX4 ووصول أول HIL_ACTUATOR_CONTROLS.
   duration_s: 30.0
   # مهلة استقرار إضافية بعد أول actuator msg قبل بدء حلقة الرحلة.
-  settle_after_arm_s: 2.0
+  settle_after_arm_s: 15.0
   # إذا لم تصل أي HIL_ACTUATOR_CONTROLS خلال warm-up، أفشل صراحةً بدلاً من
   # المتابعة بأصفار (SYS_HITL=0 أو simulator_mavlink غير متصل هي الأسباب الشائعة).
   abort_on_no_actuator: true

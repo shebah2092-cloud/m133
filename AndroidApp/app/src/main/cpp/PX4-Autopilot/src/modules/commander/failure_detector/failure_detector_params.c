@@ -58,7 +58,7 @@
  * @unit deg
  * @group Failure Detector
  */
-PARAM_DEFINE_INT32(FD_FAIL_R, 60);
+PARAM_DEFINE_INT32(FD_FAIL_R, 0);
 
 /**
  * FailureDetector Max Pitch
@@ -76,7 +76,7 @@ PARAM_DEFINE_INT32(FD_FAIL_R, 60);
  * @unit deg
  * @group Failure Detector
  */
-PARAM_DEFINE_INT32(FD_FAIL_P, 60);
+PARAM_DEFINE_INT32(FD_FAIL_P, 0);
 
 /**
  * Roll failure trigger time
@@ -140,7 +140,7 @@ PARAM_DEFINE_INT32(FD_EXT_ATS_TRIG, 1900);
  *
  * @group Failure Detector
  */
-PARAM_DEFINE_INT32(FD_ESCS_EN, 1);
+PARAM_DEFINE_INT32(FD_ESCS_EN, 0);
 
 /**
  * Imbalanced propeller check threshold
@@ -169,7 +169,7 @@ PARAM_DEFINE_INT32(FD_IMB_PROP_THR, 30);
  *
  * @group Failure Detector
  */
-PARAM_DEFINE_INT32(FD_ACT_EN, 1);
+PARAM_DEFINE_INT32(FD_ACT_EN, 0);
 
 /**
  * Motor Failure Throttle Threshold

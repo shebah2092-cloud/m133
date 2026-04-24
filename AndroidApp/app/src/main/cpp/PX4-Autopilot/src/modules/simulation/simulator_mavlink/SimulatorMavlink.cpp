@@ -56,6 +56,13 @@
 #include <termios.h>
 #include <arpa/inet.h>
 
+#if defined(__linux__)
+#  include <sched.h>
+#  include <sys/syscall.h>
+#  include <sys/types.h>
+#  include <unistd.h>
+#endif
+
 #include <limits>
 
 static int _fd;
@@ -1105,6 +1112,71 @@ void SimulatorMavlink::run()
 	pthread_setname_np("sim_rcv");
 #else
 	pthread_setname_np(pthread_self(), "sim_rcv");
+#endif
+
+#if defined(__linux__) && !defined(__PX4_DARWIN)
+	// Pin sim_rcv to every CPU EXCEPT the single fastest core so that
+	// rocket_mpc (which is affinity-locked to the big cluster) gets
+	// uncontended access to the fastest CPU. Without this, sim_rcv's
+	// blocking-poll thread happily parks itself on the big core and
+	// starves the MPC solver on ARM big.LITTLE SoCs.
+	//
+	// Strategy: read /sys/devices/system/cpu/cpuN/cpu_capacity. Exclude
+	// the core(s) with capacity == cap_max. All other online cores are
+	// available for sim_rcv. Falls back to "all but last core" if sysfs
+	// is unreadable (common Snapdragon/Dimensity layouts).
+	{
+		cpu_set_t cs;
+		CPU_ZERO(&cs);
+		long ncpu = sysconf(_SC_NPROCESSORS_CONF);
+
+		if (ncpu < 1) { ncpu = 8; }
+
+		long cap[64] = {};
+		long cap_max = 0;
+		bool have_cap = false;
+
+		for (long c = 0; c < ncpu && c < 64; ++c) {
+			char path[96];
+			snprintf(path, sizeof(path),
+				 "/sys/devices/system/cpu/cpu%ld/cpu_capacity", c);
+			FILE *f = fopen(path, "r");
+
+			if (f) {
+				if (fscanf(f, "%ld", &cap[c]) == 1 && cap[c] > 0) {
+					have_cap = true;
+
+					if (cap[c] > cap_max) { cap_max = cap[c]; }
+				}
+
+				fclose(f);
+			}
+		}
+
+		int n_set = 0;
+
+		if (have_cap && cap_max > 0) {
+			for (long c = 0; c < ncpu && c < 64; ++c) {
+				// Exclude the top cluster (capacity == cap_max).
+				// Those cores are reserved for rocket_mpc.
+				if (cap[c] > 0 && cap[c] < cap_max) {
+					CPU_SET((int)c, &cs); ++n_set;
+				}
+			}
+		}
+
+		if (n_set == 0) {
+			// Fallback: all cores except the last one.
+			for (long c = 0; c < ncpu - 1 && c < 64; ++c) {
+				CPU_SET((int)c, &cs); ++n_set;
+			}
+		}
+
+		pid_t tid = (pid_t)syscall(SYS_gettid);
+		int aff_rc = sched_setaffinity(tid, sizeof(cs), &cs);
+		PX4_INFO("sim_rcv affinity: excluded top cluster, %d cores available (rc=%d)",
+			 n_set, aff_rc);
+	}
 #endif
 
 	struct sockaddr_in _myaddr {};

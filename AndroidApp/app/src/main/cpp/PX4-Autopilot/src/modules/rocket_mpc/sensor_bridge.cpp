@@ -94,7 +94,22 @@ void SensorBridge::update_from_lpos(const vehicle_local_position_s &lpos)
 	}
 
 	_gps_valid = true;
-	_last_gps_update_us = hrt_absolute_time();
+
+	// Rate-limit GPS freshness to match the real GPS cadence (~5-10 Hz).
+	// update_from_lpos() is called at IMU rate (100+ Hz) but the underlying
+	// EKF2 position only changes meaningfully when a new GPS sample is fused.
+	// Without this gate, every call stamps a new _last_gps_update_us, making
+	// build_measurement() see gps_fresh=true at 100 Hz instead of ~10 Hz.
+	// MHE then assigns full GPS weight to ALL 20 horizon stages (instead
+	// of ~2), over-constraining the position fit and inflating w_norm
+	// → quality stuck at ~0.30 → blend=0 for the entire flight.
+	static constexpr hrt_abstime MIN_GPS_INTERVAL_US = 80'000;  // 80ms → ~12 Hz max
+	const hrt_abstime now_lpos = hrt_absolute_time();
+
+	if (_last_gps_update_us == 0 ||
+	    (now_lpos - _last_gps_update_us) >= MIN_GPS_INTERVAL_US) {
+		_last_gps_update_us = now_lpos;
+	}
 }
 
 void SensorBridge::update_baro(const vehicle_air_data_s &air)
@@ -166,9 +181,13 @@ SensorMeasurement SensorBridge::build_measurement(
 
 	// GPS velocity (NED frame, m/s). When velocity is not valid, zero
 	// the slots so stale readings don't leak into the MHE measurement.
+	// NOTE: when !_gps_vel_valid these are zero, but MHE must NOT trust
+	// them — see gps_vel_valid flag below which tells MHE to zero the
+	// velocity rows in its weight matrix.
 	m.y[10] = _gps_vel_valid ? _gps_vn : 0.0;
 	m.y[11] = _gps_vel_valid ? _gps_ve : 0.0;
 	m.y[12] = _gps_vel_valid ? _gps_vd : 0.0;
+	m.gps_vel_valid = _gps_vel_valid;
 
 	// GPS freshness: true only if the underlying GPS timestamp actually
 	// changed since the previous build_measurement() call. At 50 Hz MPC

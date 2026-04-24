@@ -6,7 +6,7 @@ parameters:
       description:
         short: 1-sigma IMU accelerometer switch-on bias
       type: float
-      default: 0.2
+      default: 0.4
       min: 0.0
       max: 0.5
       unit: m/s^2

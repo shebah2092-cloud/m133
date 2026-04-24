@@ -12,7 +12,7 @@
             "qpdunes": "",
             "qpoases": ""
         },
-        "acados_version": "unknown",
+        "acados_version": "8af02912",
         "code_export_directory": "/home/yoga/m13/c_generated_code",
         "cython_include_dirs": [
             "/home/yoga/m13/.venv/lib/python3.10/site-packages/numpy/_core/include",
@@ -3650,7 +3650,7 @@
         "m130_mhe_cost/m130_mhe_cost_y_fun_jac_ut_xt.c",
         "m130_mhe_cost/m130_mhe_cost_y_hess.c"
     ],
-    "hash": "76320b928c75ea3be3e62fc6980d0e8d",
+    "hash": "c66c2c97754c334ec9efbced20024a7f",
     "model": {
         "con_h_expr": [],
         "con_h_expr_0": [],

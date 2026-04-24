@@ -24,11 +24,14 @@ param set COM_ARM_CHK_ESCS 0      # no ESCs
 param set FD_ESCS_EN 0
 param set FD_FAIL_P 0
 param set FD_FAIL_R 0
+param set CBRK_FLIGHTTERM 121212   # disable flight termination action
+param set COM_LKDOWN_TKO  0       # disable takeoff-lockdown window
 param set COM_ARM_HFLT_CHK 0
 param set SYS_HAS_NUM_ASPD 0     # no airspeed sensor
 param set SYS_HAS_NUM_OF   0     # no optical flow
 param set SYS_HAS_NUM_DIST 0     # no distance sensor
 param set COM_RC_IN_MODE   4     # no RC - disables RC/manual-control checks
+param set COM_ARM_WO_GPS   0     # require GPS to arm
 param set COM_ARM_ODID     0     # no OpenDroneID
 param set COM_FLT_TIME_MAX -1    # no flight-time limit
 param set COM_PARACHUTE    0     # no parachute
@@ -43,6 +46,7 @@ param set NAV_RCL_ACT 0
 param set GF_ACTION 0
 param set CBRK_SUPPLY_CHK 894281
 param set COM_DISARM_PRFLT -1
+param set COM_DISARM_LAND  0        # no landing-detected disarm
 
 # ---- EKF2 - use barometer for height, GPS for position ----
 param set EKF2_HGT_REF 1

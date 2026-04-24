@@ -26,6 +26,7 @@ struct SensorMeasurement {
 	bool valid;
 	bool baro_valid;  // false when baro data is stale (> BARO_STALE_TIMEOUT_US)
 	bool gps_fresh;   // true only when GPS was actually updated since last build_measurement()
+	bool gps_vel_valid;  // true only when GPS velocity is valid (vel_ned_valid + finite)
 };
 
 class SensorBridge

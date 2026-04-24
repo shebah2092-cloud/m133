@@ -26,7 +26,7 @@ parameters:
         long: Sets the number of standard deviations used by the innovation consistency
           test.
       type: float
-      default: 5.0
+      default: 20.0
       min: 1.0
       unit: SD
       decimal: 1
@@ -34,7 +34,7 @@ parameters:
       description:
         short: Measurement noise for barometric altitude
       type: float
-      default: 3.5
+      default: 15.0
       min: 0.01
       max: 15.0
       unit: m
@@ -69,7 +69,7 @@ parameters:
           height estimate rises during forward flight, then this will be a negative
           number.
       type: float
-      default: 0.0
+      default: -0.5
       min: -0.5
       max: 0.5
       decimal: 2
@@ -123,7 +123,7 @@ parameters:
       description:
         short: Maximum airspeed used for baro static pressure compensation
       type: float
-      default: 20.0
+      default: 50.0
       min: 5.0
       max: 50.0
       unit: m/s

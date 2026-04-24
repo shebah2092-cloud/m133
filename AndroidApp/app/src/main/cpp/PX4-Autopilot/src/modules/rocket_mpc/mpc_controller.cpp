@@ -538,9 +538,21 @@ MpcSolveResult MpcController::solve(const double x_mpc[MPC_NX],
 
 	if (_consec_fails > 3) { n_rti = 8; }
 
+	// Time budget for the entire RTI loop.  Each m130_rocket_acados_solve()
+	// is a blocking call with no internal timeout.  PIL on Android showed
+	// single-iteration spikes up to 69 ms; without a budget check, multiple
+	// slow iterations accumulate and stall the whole control loop.  35 ms
+	// is generous for the warm-start case (typ. 3 × 5 ms) while still
+	// leaving headroom for the 20 ms control cadence + MHE + publish.
+	// A partial solve (fewer iterations) is safe: SQP_RTI produces a valid
+	// (if suboptimal) control action after every completed iteration.
+	static constexpr hrt_abstime SOLVE_BUDGET_US = 35'000;  // 35 ms
+
 	hrt_abstime t0 = hrt_absolute_time();
 	bool ok = true;
 	int status = 0;
+	int iters_done = 0;
+	bool timed_out = false;
 
 	for (int i = 0; i < n_rti; i++) {
 		if (_solve_count < 2) { PX4_DEBUG("MPC RTI iter %d/%d", i, n_rti); }
@@ -549,6 +561,23 @@ MpcSolveResult MpcController::solve(const double x_mpc[MPC_NX],
 
 		if (status != 0 && status != 2) {
 			ok = false;
+			break;
+		}
+
+		iters_done++;
+
+		// Budget check: don't start the next iteration if we're already
+		// over the wall-clock budget.  The solution from the completed
+		// iteration(s) is still usable.
+		if ((hrt_absolute_time() - t0) >= SOLVE_BUDGET_US) {
+			timed_out = (i + 1 < n_rti);  // true only if we skipped iterations
+
+			if (timed_out) {
+				PX4_WARN("MPC solve timeout after %d/%d iters (%.1f ms)",
+					 iters_done, n_rti,
+					 (double)((float)(hrt_absolute_time() - t0) * 1e-3f));
+			}
+
 			break;
 		}
 	}

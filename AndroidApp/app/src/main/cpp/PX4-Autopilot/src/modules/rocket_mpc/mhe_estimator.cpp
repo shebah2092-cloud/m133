@@ -174,7 +174,8 @@ void MheEstimator::reset()
 // ===================================================================
 // Ring buffer push
 // ===================================================================
-void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS], bool gps_fresh)
+void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS], bool gps_fresh,
+				    bool gps_vel_valid)
 {
 	// Gap detection: the acados-generated MHE solver assumes every stage
 	// is spaced by exactly horizon_dt (20 ms).  If measurements stop (e.g.
@@ -236,6 +237,7 @@ void MheEstimator::push_measurement(float t, const double y_meas[MHE_NMEAS], boo
 	_meas_buf[idx].t = t;
 	memcpy(_meas_buf[idx].y, y_meas, MHE_NMEAS * sizeof(double));
 	_meas_buf[idx].gps_fresh = gps_fresh;
+	_meas_buf[idx].gps_vel_valid = gps_vel_valid;
 	_meas_head++;
 
 	if (_meas_count < BUF_SIZE) { _meas_count++; }
@@ -314,7 +316,9 @@ MheOutput MheEstimator::update(float t)
 	if (!_W_cached) {
 		ocp_nlp_cost_model_get(_nlp_config, _nlp_dims, _nlp_in, 1, "W", _W_fresh);
 		memcpy(_W_stale, _W_fresh, sizeof(_W_fresh));
+		memcpy(_W_pos_only, _W_fresh, sizeof(_W_fresh));
 
+		// _W_stale: zero ALL GPS rows/cols 7..12 (position + velocity)
 		for (int i = 7; i < 13; i++) {
 			for (int j = 0; j < MHE_NY; j++) {
 				_W_stale[i * MHE_NY + j] = 0.0;
@@ -322,13 +326,33 @@ MheOutput MheEstimator::update(float t)
 			}
 		}
 
+		// _W_pos_only: zero only velocity rows/cols 10..12, keep position 7..9.
+		// Prevents y[10..12]=0 (from vel_ned_valid=false) from getting
+		// full weight while preserving the valid position measurement.
+		for (int i = 10; i < 13; i++) {
+			for (int j = 0; j < MHE_NY; j++) {
+				_W_pos_only[i * MHE_NY + j] = 0.0;
+				_W_pos_only[j * MHE_NY + i] = 0.0;
+			}
+		}
+
 		ocp_nlp_cost_model_get(_nlp_config, _nlp_dims, _nlp_in, 0, "W", _W0_fresh);
 		memcpy(_W0_stale, _W0_fresh, sizeof(_W0_fresh));
+		memcpy(_W0_pos_only, _W0_fresh, sizeof(_W0_fresh));
 
+		// _W0_stale: zero ALL GPS rows/cols 7..12
 		for (int i = 7; i < 13; i++) {
 			for (int j = 0; j < MHE_NY0; j++) {
 				_W0_stale[i * MHE_NY0 + j] = 0.0;
 				_W0_stale[j * MHE_NY0 + i] = 0.0;
+			}
+		}
+
+		// _W0_pos_only: zero only velocity rows/cols 10..12
+		for (int i = 10; i < 13; i++) {
+			for (int j = 0; j < MHE_NY0; j++) {
+				_W0_pos_only[i * MHE_NY0 + j] = 0.0;
+				_W0_pos_only[j * MHE_NY0 + i] = 0.0;
 			}
 		}
 
@@ -344,8 +368,18 @@ MheOutput MheEstimator::update(float t)
 		// w_noise = zeros → already zero
 		memcpy(&yref_0[MHE_NMEAS + MHE_NU], _x_bar, MHE_NX * sizeof(double));
 		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, 0, "yref", yref_0);
-		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, 0, "W",
-				      _meas_buf[idx0].gps_fresh ? _W0_fresh : _W0_stale);
+
+		// 3-way W selection:
+		//   fresh + vel_valid  → _W0_fresh    (full GPS: position + velocity)
+		//   fresh + !vel_valid → _W0_pos_only (position only, velocity zeroed)
+		//   !fresh             → _W0_stale    (no GPS at all)
+		const double *W0_sel = _W0_stale;
+
+		if (_meas_buf[idx0].gps_fresh) {
+			W0_sel = _meas_buf[idx0].gps_vel_valid ? _W0_fresh : _W0_pos_only;
+		}
+
+		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, 0, "W", (void *)W0_sel);
 	}
 
 	// Stages 1..horizon_steps-1: measurement + noise
@@ -355,11 +389,13 @@ MheOutput MheEstimator::update(float t)
 		double yref_k[MHE_NY]; // y_meas[13] + w_noise[17] = 30
 		memset(yref_k, 0, sizeof(yref_k));
 		bool fresh_k = false;
+		bool vel_valid_k = false;
 
 		if (k < n_use) {
 			int idx_k = (start_idx + k) % BUF_SIZE;
 			memcpy(yref_k, _meas_buf[idx_k].y, MHE_NMEAS * sizeof(double));
 			fresh_k = _meas_buf[idx_k].gps_fresh;
+			vel_valid_k = _meas_buf[idx_k].gps_vel_valid;
 		} else {
 			// Use last available measurement
 			int idx_last = (_meas_head - 1 + BUF_SIZE) % BUF_SIZE;
@@ -368,8 +404,15 @@ MheOutput MheEstimator::update(float t)
 		}
 
 		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, k, "yref", yref_k);
-		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, k, "W",
-				      fresh_k ? _W_fresh : _W_stale);
+
+		// 3-way W selection (same logic as stage 0)
+		const double *Wk_sel = _W_stale;
+
+		if (fresh_k) {
+			Wk_sel = vel_valid_k ? _W_fresh : _W_pos_only;
+		}
+
+		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, k, "W", (void *)Wk_sel);
 	}
 
 	// Parameters for each interval — ALIGNED WITH THE MEASUREMENT WINDOW.

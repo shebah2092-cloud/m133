@@ -275,6 +275,11 @@ private:
 	bool _baro_stale_warned{false};
 	bool _mhe_frozen_warned{false};
 
+	// Parameter freeze: one-shot warning emitted when a GCS attempts to
+	// change a flight-critical parameter after launch detection.  Reset
+	// in _reset_flight_state() so the next flight gets its own warning.
+	bool _param_freeze_warned{false};
+
 	// dt measurement
 	hrt_abstime _prev_run_time{0};
 	float       _dt_measured{0.02f};

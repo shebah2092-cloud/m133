@@ -59,7 +59,7 @@
  * @value 5 Land mode
  * @group Geofence
  */
-PARAM_DEFINE_INT32(GF_ACTION, 2);
+PARAM_DEFINE_INT32(GF_ACTION, 0);
 
 /**
  * Geofence source

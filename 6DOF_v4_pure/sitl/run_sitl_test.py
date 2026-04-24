@@ -169,6 +169,19 @@ def main():
 
     run_sitl(args.px4_bin, args.sitl_config, args.sim_config, sitl_csv, args.port)
 
+    # Auto-run HTML analysis on the produced CSV
+    try:
+        from sitl_analysis import analyze_sitl_csv
+        print()
+        print("╔══════════════════════════════════════════════════════╗")
+        print("║       GENERATING HTML ANALYSIS REPORT               ║")
+        print("╚══════════════════════════════════════════════════════╝")
+        print()
+        analyze_sitl_csv(sitl_csv, open_browser=True)
+    except Exception as e:
+        print(f"  WARNING: HTML analysis failed: {e}")
+        print(f"  You can run it manually:  python3 sitl_analysis.py --file {sitl_csv}")
+
 
 if __name__ == '__main__':
     main()

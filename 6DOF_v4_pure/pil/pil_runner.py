@@ -62,6 +62,18 @@ def main():
 
     run_pil(args.config, pil_csv, timing_csv)
 
+    # Auto-run HTML analysis
+    try:
+        from pil_analysis import analyze_pil_csv
+        print()
+        print("╔══════════════════════════════════════════════════════╗")
+        print("║       GENERATING HTML ANALYSIS REPORT (PIL)         ║")
+        print("╚══════════════════════════════════════════════════════╝")
+        analyze_pil_csv(pil_csv, open_browser=True)
+    except Exception as e:
+        print(f"  WARNING: HTML analysis failed: {e}")
+        print(f"  You can run it manually:  python3 pil_analysis.py --file {pil_csv}")
+
 
 if __name__ == "__main__":
     main()

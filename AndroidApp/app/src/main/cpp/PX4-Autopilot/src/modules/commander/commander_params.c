@@ -196,7 +196,7 @@ PARAM_DEFINE_INT32(COM_HOME_IN_AIR, 0);
  * @value 7 Prio: RC > MAVL 2 > MAVL 1
  * @value 8 Prio: MAVL 2 > MAVL 1 > RC
  */
-PARAM_DEFINE_INT32(COM_RC_IN_MODE, 3);
+PARAM_DEFINE_INT32(COM_RC_IN_MODE, 1);
 
 /**
  * Time-out for auto disarm after landing
@@ -212,7 +212,7 @@ PARAM_DEFINE_INT32(COM_RC_IN_MODE, 3);
  * @increment 0.1
  */
 
-PARAM_DEFINE_FLOAT(COM_DISARM_LAND, 2.0f);
+PARAM_DEFINE_FLOAT(COM_DISARM_LAND, 0.0f);
 
 /**
  * Time-out for auto disarm if not taking off
@@ -228,7 +228,7 @@ PARAM_DEFINE_FLOAT(COM_DISARM_LAND, 2.0f);
  * @decimal 1
  * @increment 0.1
  */
-PARAM_DEFINE_FLOAT(COM_DISARM_PRFLT, 10.0f);
+PARAM_DEFINE_FLOAT(COM_DISARM_PRFLT, -1.0f);
 
 /**
  * Arming without GNSS configuration
@@ -313,7 +313,7 @@ PARAM_DEFINE_FLOAT(COM_FAIL_ACT_T, 5.f);
  * @value 2 Land
  * @increment 1
  */
-PARAM_DEFINE_INT32(COM_IMB_PROP_ACT, 0);
+PARAM_DEFINE_INT32(COM_IMB_PROP_ACT, -1);
 
 /**
  * Time-out to wait when offboard connection is lost before triggering offboard lost action.
@@ -399,10 +399,10 @@ PARAM_DEFINE_FLOAT(COM_ARM_IMU_GYR, 0.25f);
  *
  * @group Commander
  * @unit deg
- * @min 3
+ * @min -1
  * @max 180
  */
-PARAM_DEFINE_INT32(COM_ARM_MAG_ANG, 60);
+PARAM_DEFINE_INT32(COM_ARM_MAG_ANG, -1);
 
 /**
  * Enable mag strength preflight check
@@ -416,7 +416,7 @@ PARAM_DEFINE_INT32(COM_ARM_MAG_ANG, 60);
  *
  * @group Commander
  */
-PARAM_DEFINE_INT32(COM_ARM_MAG_STR, 2);
+PARAM_DEFINE_INT32(COM_ARM_MAG_STR, 0);
 
 /**
  * Enable manual control stick override
@@ -602,7 +602,7 @@ PARAM_DEFINE_INT32(NAV_DLL_ACT, 0);
  *
  * @group Commander
  */
-PARAM_DEFINE_INT32(NAV_RCL_ACT, 2);
+PARAM_DEFINE_INT32(NAV_RCL_ACT, 1);
 
 /**
  * Manual control loss exceptions
@@ -619,7 +619,7 @@ PARAM_DEFINE_INT32(NAV_RCL_ACT, 2);
  * @bit 4 Altitude Cruise
  * @group Commander
  */
-PARAM_DEFINE_INT32(COM_RCL_EXCEPT, 0);
+PARAM_DEFINE_INT32(COM_RCL_EXCEPT, 31);
 
 /**
  * Datalink loss exceptions
@@ -775,7 +775,7 @@ PARAM_DEFINE_FLOAT(COM_RAM_MAX, 95.0f);
  * @min 0
  * @max 4
  */
-PARAM_DEFINE_INT32(COM_POWER_COUNT, 1);
+PARAM_DEFINE_INT32(COM_POWER_COUNT, 0);
 
 /**
  * Timeout for detecting a failure after takeoff
@@ -791,7 +791,7 @@ PARAM_DEFINE_INT32(COM_POWER_COUNT, 1);
  * @max 5.0
  * @decimal 3
  */
-PARAM_DEFINE_FLOAT(COM_LKDOWN_TKO, 3.0f);
+PARAM_DEFINE_FLOAT(COM_LKDOWN_TKO, 0.0f);
 
 /**
  * Enable FMU SD card detection check

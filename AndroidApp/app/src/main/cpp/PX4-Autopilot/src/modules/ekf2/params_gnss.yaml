@@ -43,7 +43,7 @@ parameters:
       description:
         short: Measurement noise for GNSS position
       type: float
-      default: 0.5
+      default: 1.5
       min: 0.01
       max: 10.0
       unit: m
@@ -54,7 +54,7 @@ parameters:
         long: Sets the number of standard deviations used by the innovation consistency
           test.
       type: float
-      default: 5.0
+      default: 10.0
       min: 1.0
       unit: SD
       decimal: 1
@@ -73,7 +73,7 @@ parameters:
         long: Sets the number of standard deviations used by the innovation consistency
           test.
       type: float
-      default: 5.0
+      default: 10.0
       min: 1.0
       unit: SD
       decimal: 1
@@ -81,7 +81,7 @@ parameters:
       description:
         short: Measurement noise for GNSS velocity
       type: float
-      default: 0.3
+      default: 0.5
       min: 0.01
       max: 5.0
       unit: m/s

@@ -396,6 +396,20 @@ class PILBridge:
         self.timing_enabled = bool(timing_cfg.get("enabled", True))
         self.deadline_us = int(timing_cfg.get("deadline_us", 20000))
 
+        # Clock mode: "realtime" (default, wall-clock pacing) أو "lockstep"
+        # (ننتظر HIL_ACTUATOR_CONTROLS قبل التقدّم — يُحاكي Gazebo lockstep
+        # لـ SITL). في lockstep، الرحلة تُقاس بـ MPC throughput لا wall-clock،
+        # وتُزال قطعة الأثر الناتجة عن TCP/scheduler jitter.
+        clock_cfg = self.cfg.get("clock", {})
+        self.clock_mode = str(clock_cfg.get("mode", "realtime")).lower()
+        # في lockstep: نُسَنكِن كل `mpc_cycle_hz` مع response من PX4.
+        # 25Hz يطابق rocket_mpc MPC rate الافتراضي (sensor_combined @ 100Hz
+        # مقسوم على 4). يمكن رفعه لـ 50Hz إذا MPC rate أُبقي 50Hz.
+        self.mpc_cycle_hz = float(clock_cfg.get("mpc_cycle_hz", 25.0))
+        # timeout لكل sync point — إذا MPC فشل يُحل خلال هذا الوقت نتابع بـ
+        # last actuator (fallback آمن).
+        self.lockstep_timeout_s = float(clock_cfg.get("lockstep_timeout_s", 1.0))
+
         warmup_cfg = self.cfg.get("warmup", {})
         self.warmup_duration_s = float(warmup_cfg.get("duration_s", 15.0))
         self.settle_after_arm_s = float(warmup_cfg.get("settle_after_arm_s", 2.0))
@@ -767,7 +781,8 @@ class PILBridge:
                 "  لتجاوز هذا الفحص: warmup.abort_on_no_actuator: false في pil_config.yaml."
             )
 
-        print("[PIL] Starting flight loop (realtime)...")
+        mode_label = "lockstep" if self.clock_mode == "lockstep" else "realtime"
+        print(f"[PIL] Starting flight loop ({mode_label})...")
         t_wall0 = time.monotonic()
         _t_off_us = self._sim_t_us + int(dt * 1e6)
         step = 0
@@ -783,6 +798,13 @@ class PILBridge:
         gps_every = max(1, int(round(1.0 / (10 * dt))))
         state_every = max(1, int(round(1.0 / (50 * dt))))
         hb_every = 100
+
+        # lockstep: كل mpc_every خطوة نتوقّف وننتظر actuator جديد (sync point).
+        # هذا يطابق سلوك Gazebo lockstep: الديناميكا تتقدّم بـ n خطوات dt ثم
+        # تتزامن مع استجابة MPC. خارج نقاط sync نتابع بأقصى سرعة بدون wall-clock.
+        lockstep_on = (self.clock_mode == "lockstep")
+        mpc_every = max(1, int(round(1.0 / (self.mpc_cycle_hz * dt))))
+        lockstep_missed = 0
 
         while step < n_steps and self._running:
             t = step * dt
@@ -831,11 +853,23 @@ class PILBridge:
                 print(f"\n[PIL] Ground impact at t={t_end:.3f}s")
                 break
 
-            # pacing
-            target_wall = t_wall0 + t
-            now = time.monotonic()
-            if now < target_wall:
-                time.sleep(target_wall - now)
+            # pacing: lockstep أو realtime
+            if lockstep_on:
+                # نقطة sync كل mpc_every خطوة: ننتظر actuator جديد قبل التقدّم.
+                # خارج نقاط sync، نتابع بأقصى سرعة (لا wall-clock gating).
+                # هذا يطابق سلوك Gazebo/SITL حيث الـ simulator ينتظر PX4.
+                if (step + 1) % mpc_every == 0:
+                    if not self._wait_for_new_actuator(self.lockstep_timeout_s):
+                        lockstep_missed += 1
+                        if lockstep_missed <= 5 or lockstep_missed % 50 == 0:
+                            print(f"\n[PIL] lockstep timeout #{lockstep_missed} "
+                                  f"at t={t:.3f}s (MPC may be stuck)")
+            else:
+                # realtime: نوم حتى الـ wall-clock يصل لـ t
+                target_wall = t_wall0 + t
+                now = time.monotonic()
+                if now < target_wall:
+                    time.sleep(target_wall - now)
 
             state = next_state
             step += 1
@@ -851,6 +885,9 @@ class PILBridge:
 
         print(f"\n[PIL] Loop done: {step} steps, t={t:.3f}s, "
               f"wall={time.monotonic() - t_wall0:.1f}s")
+        if lockstep_on and lockstep_missed > 0:
+            print(f"[PIL] lockstep timeouts: {lockstep_missed} "
+                  f"(ignored — continued with last actuator)")
 
         # إيقاف خيط التوقيت
         self._timing_stop.set()
@@ -871,6 +908,31 @@ class PILBridge:
         return self.flight
 
     # ─── استقبال رسائل الهدف ────────────────────────────────────────────────
+
+    def _wait_for_new_actuator(self, timeout_s: float) -> bool:
+        """ينتظر رسالة HIL_ACTUATOR_CONTROLS جديدة من PX4 (lockstep sync).
+
+        يُستدعى في lockstep mode فقط — يحجب المحاكاة حتى يكتمل MPC solve على
+        الهدف (ARM64) ويُرسل response. هذا يُزيل قطعة الأثر الناتجة عن realtime
+        pacing حيث الديناميكا تتقدّم بينما MPC ما زال يحل، مسبّبة phase lag
+        عشوائي وعدم استقرار.
+
+        Returns:
+            True إذا وصل actuator جديد، False إذا انتهت المهلة (fallback لـ
+            آخر actuator معروف).
+        """
+        act_before = self._actuator_msg_count
+        deadline = time.monotonic() + timeout_s
+        # Poll كل 0.5ms حتى نستلم رسالة جديدة أو تنتهي المهلة. النومات
+        # الصغيرة تُقلّل تحميل CPU دون التأثير على الـ latency المقاسة.
+        while self._actuator_msg_count == act_before:
+            self._drain_target(0.0)
+            if self._actuator_msg_count > act_before:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.0005)
+        return True
 
     def _drain_target(self, dt: float):
         """قراءة ما توفّر من الهدف بلا حجب. يحدّث التحكّم وسجلّ التوقيت.
