@@ -70,25 +70,111 @@ def _adb() -> str | None:
     return None
 
 
+_ADB_SERIAL: str | None = None
+
+
+def _select_adb_serial(adb: str) -> str | None:
+    """يختار جهاز adb واحداً عند وجود عدّة أجهزة (USB + Wi-Fi معاً يُنتجان
+    خطأ ``more than one device``). أولوية:
+
+      1) متغيّر البيئة ``ANDROID_SERIAL`` (الواجهة القياسية لـ adb)
+      2) جهاز Wi-Fi (يحوي ":") — أكثر استقراراً للجلسات الطويلة
+      3) أوّل جهاز ذو حالة ``device``
+
+    يُحفظ النتيجة في ``_ADB_SERIAL`` ليُحقن في كل أمر adb لاحق عبر ``-s``.
+    """
+    global _ADB_SERIAL
+    if _ADB_SERIAL is not None:
+        return _ADB_SERIAL
+    env_serial = os.environ.get("ANDROID_SERIAL")
+    if env_serial:
+        _ADB_SERIAL = env_serial
+        return _ADB_SERIAL
+    out = subprocess.run([adb, "devices"], capture_output=True, text=True,
+                         timeout=5).stdout
+    devs = [ln.split()[0] for ln in out.splitlines()[1:]
+            if ln.strip() and "\tdevice" in ln]
+    if not devs:
+        return None
+    # تفضيل Wi-Fi (يحوي IP:port)
+    wifi = [d for d in devs if ":" in d]
+    _ADB_SERIAL = wifi[0] if wifi else devs[0]
+    return _ADB_SERIAL
+
+
 def _run_adb(adb: str, args: list[str], check: bool = False,
              timeout: float = 10.0) -> subprocess.CompletedProcess:
-    """نفّذ أمر adb ويُرجع النتيجة مع stdout/stderr."""
+    """نفّذ أمر adb ويُرجع النتيجة مع stdout/stderr.
+
+    يُحقن ``-s <serial>`` تلقائياً عند وجود أكثر من جهاز.
+    """
+    serial = _select_adb_serial(adb)
+    full_args = [adb]
+    if serial:
+        full_args += ["-s", serial]
+    full_args += args
     return subprocess.run(
-        [adb] + args,
+        full_args,
         check=check, timeout=timeout,
         capture_output=True, text=True,
     )
 
 
+def _bridge_healthy(adb: str) -> bool:
+    """يتحقق من أن mavlink_tcp_bridge مُهيَّأ على المنفذ 5760 داخل الجوّال
+    وأن قناة USB tunnel جاهزة. تجنّباً لإعادة تشغيل التطبيق بلا داعٍ.
+    """
+    # 1) التطبيق يعمل
+    pid_res = _run_adb(adb, ["shell", "pidof", _APP_PACKAGE])
+    if not pid_res.stdout.strip().isdigit():
+        return False
+    # 2) الجوّال يستمع على tcp:5760 (mavlink_tcp_bridge)
+    tcp = _run_adb(adb, ["shell", "cat", "/proc/net/tcp"]).stdout
+    if ":1680 " not in tcp.replace("\t", " "):
+        return False
+    # 3) USB-tunnel forward مهيّأ من PC
+    fwd = _run_adb(adb, ["forward", "--list"]).stdout
+    if "tcp:5760 tcp:5760" not in fwd:
+        return False
+    # 4) reverse:4560 موجود (لا غنى عنه: simulator_mavlink → PC)
+    rev = _run_adb(adb, ["reverse", "--list"]).stdout
+    if "tcp:4560 tcp:4560" not in rev:
+        return False
+    return True
+
+
+def _ensure_adb_ports(adb: str) -> tuple[bool, str]:
+    """يضمن إعداد adb القنوات الصحيحة بشكل **idempotent**:
+
+      * ``reverse tcp:4560`` ← simulator_mavlink ينشئ اتصالاً صادراً نحو PC
+      * ``forward tcp:5760`` ← HIL bridge يقرأ DEBUG_FLOAT_ARRAY عبر loopback
+      * ❗ يُلغي ``reverse tcp:5760`` إن وُجد لأن adbd يستولي على المنفذ
+        فيمنع ``mavlink_tcp_bridge`` من ``bind()`` داخل التطبيق ويكسر كل
+        تدفّق MAVLink (تشخيص: SRV_FB=0 → ABORT بعد 500ms).
+    """
+    # 1) أزل reverse:5760 السام إن وُجد
+    rev = _run_adb(adb, ["reverse", "--list"]).stdout
+    if "tcp:5760 tcp:5760" in rev:
+        _run_adb(adb, ["reverse", "--remove", "tcp:5760"])
+    # 2) أنشئ القنوات الصحيحة (idempotent: إعادة التعيين تستبدل القديمة)
+    r1 = _run_adb(adb, ["reverse", "tcp:4560", "tcp:4560"])
+    r2 = _run_adb(adb, ["forward", "tcp:5760", "tcp:5760"])
+    ok = (r1.returncode == 0 and r2.returncode == 0)
+    err = ""
+    if not ok:
+        err = f"reverse={r1.stderr.strip()} forward={r2.stderr.strip()}"
+    return ok, err
+
+
 def preflight_reset(cfg_path: str) -> None:
     """تهيئة بيئة نظيفة قبل تشغيل HIL.
 
-    الخطوات:
-      1) force-stop تطبيق PX4 على الهاتف (يُزيل أي حالة armed/termination عالقة
-         وأي sockets مسرّبة على port 5760)
-      2) إزالة جميع adb reverse/forward القديمة
-      3) إنشاء reverse 4560 و forward 5760 من جديد
-      4) إعادة تشغيل التطبيق وانتظار 5s لتهيئة PX4 modules
+    الخطوات (مع تجنّب إعادة التشغيل غير الضرورية):
+      1) ضبط adb reverse 4560 / forward 5760 وإلغاء reverse 5760 السام
+      2) فحص حالة الجسر — إن كان ``mavlink_tcp_bridge`` يستمع على 5760 وكل
+         القنوات سليمة، نتخطى إعادة التشغيل ونُكمل مباشرة.
+      3) خلاف ذلك: force-stop ثم relaunch ثم انتظار جاهزية الجسر حتى 30s
+         قبل المتابعة (يتطلب من المستخدم الضغط على START في الواجهة).
 
     يُتخطى بالكامل إذا warmup.preflight_reset=false أو adb غير متاح.
     """
@@ -107,25 +193,38 @@ def preflight_reset(cfg_path: str) -> None:
               "Ensure ports 4560/5760 are reachable manually.")
         return
 
-    print("[preflight] Resetting phone + adb ports...")
     devs = _run_adb(adb, ["devices"]).stdout
     if "\tdevice" not in devs:
         print("[preflight] WARNING: no adb device connected — skipping reset.")
         return
 
+    # دائماً اضبط القنوات أولاً (idempotent)
+    ok, err = _ensure_adb_ports(adb)
+    if not ok:
+        print(f"[preflight] WARNING: adb reverse/forward failed: {err}")
+
+    # إن كان الجسر سليماً نتخطى إعادة التشغيل (يحفظ وقت + يتجنّب طلب START
+    # من المستخدم مرة أخرى)
+    if _bridge_healthy(adb):
+        print("[preflight] Bridge healthy — skipping app restart.")
+        return
+
+    print("[preflight] Bridge not ready — restarting app...")
     _run_adb(adb, ["shell", "am", "force-stop", _APP_PACKAGE])
     time.sleep(1.5)
-    _run_adb(adb, ["reverse", "--remove-all"])
-    _run_adb(adb, ["forward", "--remove-all"])
-    r1 = _run_adb(adb, ["reverse", "tcp:4560", "tcp:4560"])
-    r2 = _run_adb(adb, ["forward", "tcp:5760", "tcp:5760"])
-    if r1.returncode != 0 or r2.returncode != 0:
-        print(f"[preflight] WARNING: adb reverse/forward failed: "
-              f"reverse={r1.stderr.strip()} forward={r2.stderr.strip()}")
+    # إعادة ضبط القنوات بعد force-stop (الـ forward يبقى لكن نضمن صحة الحالة)
+    _ensure_adb_ports(adb)
     _run_adb(adb, ["shell", "am", "start", "-n", _APP_MAIN_ACTIVITY])
-    print("[preflight] App launched — waiting 5s for PX4 modules to initialize...")
-    time.sleep(5.0)
-    print("[preflight] Ready.")
+    print("[preflight] App launched — اضغط START الآن إن لم يُشغَّل تلقائياً.")
+    print("[preflight] Waiting up to 30s for mavlink_tcp_bridge on 5760...")
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if _bridge_healthy(adb):
+            print("[preflight] Bridge ready.")
+            return
+        time.sleep(1.0)
+    print("[preflight] WARNING: bridge not detected after 30s — continuing "
+          "anyway. If HIL aborts, press START in the app and re-run.")
 
 
 def run_hil(cfg_path: str, flight_csv: str, timing_csv: str) -> tuple[str, str]:

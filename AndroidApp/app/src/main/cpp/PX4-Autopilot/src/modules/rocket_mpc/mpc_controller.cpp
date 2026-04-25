@@ -98,7 +98,7 @@ void MpcController::get_params(float t, double p[MPC_NP]) const
 // Weight scheduling — exact port from Python _update_weights_for_phase
 // ===================================================================
 void MpcController::_compute_weights(float t, float gamma, float gamma_ref_prev,
-				     float phi,
+				     float phi, float p_rate,
 				     float alpha, float q_rate, float x_pos,
 				     bool cruise_alt_set, float h_ref_scaled,
 				     double W[MPC_NY], double W_e[MPC_NYN])
@@ -213,27 +213,59 @@ void MpcController::_compute_weights(float t, float gamma, float gamma_ref_prev,
 		h_cruise_w = (15.0f + 35.0f * early_boost) * (1.0f - s_dive);
 	}
 
-	// Roll recovery weighting
+	// Roll recovery weighting — triggered on EITHER angle OR rate.
+	// Rationale: roll mode has a fast time-constant (~75 ms for low Ixx).
+	// Waiting until phi exceeds 5 deg leaves no horizon for the solver to
+	// recover when the disturbance enters as a body rate (motor thrust
+	// misalignment, gust, etc.) — by the time |phi|>5° the rate may have
+	// grown well past the solver's authority. We therefore trigger
+	// recovery as soon as |p| crosses a small threshold and use the max
+	// of the angle-based and rate-based scalings.
 	const float roll_recovery_start = 5.0f * (float)M_PI / 180.0f;
 	const float roll_recovery_full  = 20.0f * (float)M_PI / 180.0f;
 	float roll_abs = fabsf(phi);
-	float roll_recovery;
+	float roll_recovery_angle;
 
 	if (roll_abs <= roll_recovery_start) {
-		roll_recovery = 0.0f;
+		roll_recovery_angle = 0.0f;
 
 	} else if (roll_abs >= roll_recovery_full) {
-		roll_recovery = 1.0f;
+		roll_recovery_angle = 1.0f;
 
 	} else {
-		roll_recovery = (roll_abs - roll_recovery_start) /
-				(roll_recovery_full - roll_recovery_start);
+		roll_recovery_angle = (roll_abs - roll_recovery_start) /
+				      (roll_recovery_full - roll_recovery_start);
 	}
 
+	// Rate-based recovery: 0 when |p| <= 0.05 rad/s (~3 deg/s, sensor noise
+	// floor), full at |p| >= 0.5 rad/s (~29 deg/s, clearly disturbed).
+	const float p_rate_recovery_start = 0.05f;  // rad/s
+	const float p_rate_recovery_full  = 0.50f;  // rad/s
+	float p_abs = fabsf(p_rate);
+	float roll_recovery_rate;
+
+	if (p_abs <= p_rate_recovery_start) {
+		roll_recovery_rate = 0.0f;
+
+	} else if (p_abs >= p_rate_recovery_full) {
+		roll_recovery_rate = 1.0f;
+
+	} else {
+		roll_recovery_rate = (p_abs - p_rate_recovery_start) /
+				     (p_rate_recovery_full - p_rate_recovery_start);
+	}
+
+	float roll_recovery = (roll_recovery_angle > roll_recovery_rate) ?
+			      roll_recovery_angle : roll_recovery_rate;
+
+	// Baseline weights raised so MPC treats roll on equal footing with
+	// pitch/yaw from t=0 (previously p_w=20 vs q_w=200 left roll under-
+	// damped in nominal flight, exposing the system to roll runaway when
+	// any disturbance entered before phi crossed the recovery threshold).
 	float chi_w     = 25.0f > (120.0f * (1.0f - 0.55f * roll_recovery)) ?
 			  25.0f : (120.0f * (1.0f - 0.55f * roll_recovery));
-	float p_w       = 20.0f + 160.0f * roll_recovery;
-	float phi_w     = 80.0f + 520.0f * roll_recovery;
+	float p_w       = 120.0f + 100.0f * roll_recovery;   // was 20 + 160*r
+	float phi_w     = 200.0f + 400.0f * roll_recovery;   // was 80 + 520*r
 	float da_rate_w = 10.0f - 7.0f * roll_recovery;
 
 	// W: diagonal for [h, gamma, chi, p, q, r, alpha, beta, phi, de_rate, dr_rate, da_rate]
@@ -420,6 +452,7 @@ MpcSolveResult MpcController::solve(const double x_mpc[MPC_NX],
 	double W_diag[MPC_NY];
 	double W_e_diag[MPC_NYN];
 	_compute_weights(t_flight, (float)x_mpc[1], gamma_ref, (float)x_mpc[8],
+			 (float)x_mpc[3],
 			 (float)x_mpc[6], (float)x_mpc[4], x_pos,
 			 cruise_alt_set, h_ref_scaled,
 			 W_diag, W_e_diag);
@@ -592,8 +625,17 @@ MpcSolveResult MpcController::solve(const double x_mpc[MPC_NX],
 	double u_opt[MPC_NU];
 	ocp_nlp_out_get(_nlp_config, _nlp_dims, _nlp_out, 0, "u", u_opt);
 
+	// ── Dead-time compensation: pull fin commands from a future stage
+	// (lookahead_stage) so that by the time the CAN+servo transport delay
+	// elapses, the executed deflection matches what the MPC originally
+	// planned for "now".  Falls back to stage 1 (legacy behaviour) when
+	// the configured stage is invalid or out of range.
+	int la_stage = _cfg.lookahead_stage;
+	if (la_stage < 1)        { la_stage = 1; }
+	if (la_stage > MPC_N)    { la_stage = MPC_N; }
+
 	double x1[MPC_NX];
-	ocp_nlp_out_get(_nlp_config, _nlp_dims, _nlp_out, 1, "x", x1);
+	ocp_nlp_out_get(_nlp_config, _nlp_dims, _nlp_out, la_stage, "x", x1);
 
 	bool finite_check = true;
 

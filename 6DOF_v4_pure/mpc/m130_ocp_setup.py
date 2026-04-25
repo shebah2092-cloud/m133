@@ -34,8 +34,18 @@ def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
                     Iyy_full_val=1.1651, Iyy_dry_val=1.0789,
                     Izz_full_val=1.166,  Izz_dry_val=1.0779,
                     xbc_max_val=0.0):
+    # ── Pure-delay augmentation: disabled (N=0). The first-order cascade
+    # cannot accurately represent the simulator's shift-register pure delay
+    # — attempts at N=2/4 produced solver MINSTEP errors and unstable
+    # flights. Re-enabling needs either (a) Padé approximation in the
+    # acados model, or (b) cascade-style delay in the simulator's actuator.
+    N_DELAY_BUFFERS = 0
+    TAU_TRANSPORT_S = 0.110  # measured CAN→fin delay (servo characterization)
+
     model = create_m130_model(
         launch_alt_val=launch_alt_val, tau_servo_val=tau_servo_val,
+        tau_transport_val=TAU_TRANSPORT_S,
+        n_delay_buffers=N_DELAY_BUFFERS,
         mass_full_val=mass_full_val, mass_dry_val=mass_dry_val,
         Ixx_full_val=Ixx_full_val, Ixx_dry_val=Ixx_dry_val,
         Iyy_full_val=Iyy_full_val, Iyy_dry_val=Iyy_dry_val,
@@ -47,7 +57,8 @@ def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
     # V=0, gamma=1, chi=2, p=3, q=4, r=5, alpha=6, beta=7, phi=8,
     # h=9, x_ground=10, y_ground=11, delta_e_s=12, delta_r_s=13, delta_a_s=14,
     # delta_e_act=15, delta_r_act=16, delta_a_act=17
-    nx = 18
+    # buf_e_0..N=18..18+N-1   buf_r_0..N=...   buf_a_0..N=...
+    nx = 18 + 3 * N_DELAY_BUFFERS
     nu = 3
     N  = 200   # MPC horizon stages. N=200 + cond_N=10 gives reliable ARM64
                # realtime (condensed QP=10 stages, ~21ms avg << 40ms deadline).
@@ -254,7 +265,7 @@ def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
 
     # ── الحالة الابتدائية ──
     # Initial state updated at runtime by MpcController
-    ocp.constraints.x0 = np.array([
+    x0_base = np.array([
         30.0, np.radians(10), 0.0,  # V, gamma, chi
         0.0, 0.0, 0.0,              # p, q, r
         0.0, 0.0, 0.0,              # alpha, beta, phi
@@ -264,6 +275,8 @@ def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
         0.0, 0.0, 0.0,              # delta_e_s, delta_r_s, delta_a_s (commanded)
         0.0, 0.0, 0.0,              # delta_e_act, delta_r_act, delta_a_act (actual)
     ])
+    # Pad with zeros for the 3*Nb buffer states.
+    ocp.constraints.x0 = np.concatenate([x0_base, np.zeros(3 * N_DELAY_BUFFERS)])
 
     ocp.parameter_values = np.array([12.74, 600.0])
 

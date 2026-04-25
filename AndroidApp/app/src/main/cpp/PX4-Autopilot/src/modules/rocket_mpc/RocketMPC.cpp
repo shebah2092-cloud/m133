@@ -56,6 +56,57 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
+#include <sys/prctl.h>
+
+// Android Dynamic Performance Framework — boosts CPU frequency for the
+// pinned MPC thread when its workload is bursty enough that the default
+// EAS governor would underclock it. Available on Android 13+ (API 33).
+// Without this, even when affinity-pinned to a 3+ GHz performance core,
+// the kernel governor leaves it at ~600 MHz because per-cycle utilization
+// is < 25%, multiplying MPC solve time by 5×.
+#if __has_include(<android/performance_hint.h>)
+#  include <android/performance_hint.h>
+#  include <atomic>
+#  include <dlfcn.h>
+#  define HAVE_ANDROID_ADPF 1
+
+// We resolve ADPF symbols dynamically because minSdk < 33 causes Clang to
+// reject direct calls (functions are marked unavailable). dlsym lets us
+// keep the binary compatible with older Androids while still using the
+// performance hint API on Android 13+.
+using PFN_GetManager     = APerformanceHintManager *(*)();
+using PFN_CreateSession  = APerformanceHintSession *(*)(APerformanceHintManager *, const int32_t *, size_t, int64_t);
+using PFN_ReportActual   = int (*)(APerformanceHintSession *, int64_t);
+using PFN_CloseSession   = void (*)(APerformanceHintSession *);
+
+static PFN_GetManager     pfn_GetManager    = nullptr;
+static PFN_CreateSession  pfn_CreateSession = nullptr;
+static PFN_ReportActual   pfn_ReportActual  = nullptr;
+static PFN_CloseSession   pfn_CloseSession  = nullptr;
+
+// Module-local hint session, created once on the work-queue thread
+// the first time RocketMPC::Run() executes (see std::call_once block
+// later in this file). Reads are best-effort — null is safe.
+static std::atomic<APerformanceHintSession *> s_adpf_session{nullptr};
+
+static bool adpf_resolve_symbols()
+{
+	static bool resolved = false;
+	static bool ok = false;
+
+	if (resolved) { return ok; }
+
+	resolved = true;
+	pfn_GetManager    = (PFN_GetManager)    dlsym(RTLD_DEFAULT, "APerformanceHint_getManager");
+	pfn_CreateSession = (PFN_CreateSession) dlsym(RTLD_DEFAULT, "APerformanceHint_createSession");
+	pfn_ReportActual  = (PFN_ReportActual)  dlsym(RTLD_DEFAULT, "APerformanceHint_reportActualWorkDuration");
+	pfn_CloseSession  = (PFN_CloseSession)  dlsym(RTLD_DEFAULT, "APerformanceHint_closeSession");
+	ok = (pfn_GetManager && pfn_CreateSession && pfn_ReportActual);
+	return ok;
+}
+#else
+#  define HAVE_ANDROID_ADPF 0
+#endif
 
 // Maximum fin deflection is baked into the acados solver
 // (see m130_ocp_setup.py::delta_max = np.radians(20.0)).
@@ -251,6 +302,12 @@ bool RocketMPC::init()
 	mpc_cfg.gamma_natural_rad = 0.0f;
 	mpc_cfg.cruise_progress  = _param_cruise_p.get();
 	mpc_cfg.quality_gate_thr = _param_mhe_qg.get();
+	// Dead-time compensation: pull fin commands 6 stages ahead (= 120ms
+	// at dt=20ms), matching the measured CAN-bus + servo MCU transport
+	// delay on real hardware.  Hardcoded for now; can be promoted to a
+	// runtime parameter (ROCKET_MPC_LA) once the auto-generated params
+	// header is regenerated.  Set to 1 to restore legacy behaviour.
+	mpc_cfg.lookahead_stage  = 6;
 
 	if (!_mpc.init(mpc_cfg)) {
 		PX4_ERR("MPC solver init FAILED");
@@ -575,6 +632,12 @@ void RocketMPC::Run()
 
 		int n_big = 0;
 
+		// Pin to ALL big cores (capacity >= half of max). Single-core
+		// affinity was tested but performed WORSE (mean 15ms → 20ms,
+		// max 52ms → 90ms) because Android system threads occasionally
+		// land on the prime core and there is no fallback. Multi-core
+		// gives the EAS scheduler flexibility to migrate during
+		// transient contention while still avoiding the small cores.
 		if (have_cap && cap_max > 0) {
 			long thr = cap_max / 2;
 
@@ -605,10 +668,44 @@ void RocketMPC::Run()
 		int nice_rc = setpriority(PRIO_PROCESS, tid, -20);
 		int nice_now = getpriority(PRIO_PROCESS, tid);
 
-		PX4_INFO("RT config: affinity(big)=%s, SCHED_FIFO=%s, nice=%d (set rc=%d)",
+		// Disable kernel timer slack — by default Android coalesces timers
+		// in a 50µs window for power. Real-time control needs fired-on-time.
+		int slack_rc = prctl(PR_SET_TIMERSLACK, 1UL);
+
+		PX4_INFO("RT config: affinity(prime)=%s, SCHED_FIFO=%s, nice=%d (rc=%d), timerslack=%s",
 			 aff_rc == 0 ? "OK" : "FAIL",
 			 sch_rc == 0 ? "OK" : "FAIL",
-			 nice_now, nice_rc);
+			 nice_now, nice_rc,
+			 slack_rc == 0 ? "1ns" : "default");
+
+#if HAVE_ANDROID_ADPF
+		// Create a Performance Hint session for this thread, telling Android
+		// we expect ~20 ms of work per cycle (= MPC cadence). The kernel
+		// then boosts the frequency of the assigned core(s) to meet that
+		// deadline instead of underclocking based on average utilisation.
+		// Reporting actual durations (below) keeps the boost adaptive.
+		if (adpf_resolve_symbols()) {
+			APerformanceHintManager *mgr = pfn_GetManager();
+
+			if (mgr) {
+				int32_t tids_arr[1] = { (int32_t)tid };
+				// Target = 10 ms (aggressive: half the 20ms control period).
+				// We report mpc_solve_us (not the full cycle), so when actual
+				// solve hits 30-70 ms the governor sees a 3-7× overrun and
+				// ramps the pinned core toward max frequency.
+				int64_t target_ns = 10'000'000;  // 10 ms target
+				APerformanceHintSession *sess =
+					pfn_CreateSession(mgr, tids_arr, 1, target_ns);
+				s_adpf_session.store(sess, std::memory_order_release);
+				PX4_INFO("ADPF hint session: %s (target=10ms, reports mpc_solve_us)",
+					 sess ? "CREATED" : "FAILED (returned nullptr)");
+			} else {
+				PX4_WARN("ADPF: getManager() returned null");
+			}
+		} else {
+			PX4_INFO("ADPF: API < 33 or symbols missing — governor manages frequency");
+		}
+#endif
 	});
 
 	const hrt_abstime _cycle_t0 = hrt_absolute_time();
@@ -1830,6 +1927,23 @@ void RocketMPC::Run()
 	_mhe_solve_us = (uint32_t)(mhe_solve_ms * 1000.0f);
 	_mpc_solve_us = (uint32_t)(mpc_solve_ms * 1000.0f);
 	_cycle_us     = (uint32_t)(hrt_absolute_time() - _cycle_t0);
+
+#if HAVE_ANDROID_ADPF
+	// Report the MPC solve time (NOT the full cycle) on cycles where the
+	// solver actually ran. Reporting cycle_us on every IMU tick — including
+	// the ~50% of ticks that skip the rate-limited MPC solve — feeds the
+	// governor a misleading low average that defeats the boost. With a 10ms
+	// target and reporting only true solve durations (which currently land
+	// at 30-70 ms), the governor sees a 3-7× budget overrun and ramps the
+	// pinned core toward its max frequency.
+	if (pfn_ReportActual) {
+		APerformanceHintSession *sess = s_adpf_session.load(std::memory_order_acquire);
+
+		if (sess && _mpc_solve_us > 0) {
+			pfn_ReportActual(sess, (int64_t)_mpc_solve_us * 1000);
+		}
+	}
+#endif
 
 	// ---- Publish status (reuse rocket_gnc_status topic) ----
 	{

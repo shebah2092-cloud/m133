@@ -37,7 +37,8 @@ if _ACADOS_DIR.exists():
 
 from dynamics.quaternion_utils import quaternion_to_euler
 
-NX = 18
+NX = 18  # base state vector. _extract_mpc_state pads to N_DELAY_BUFFERS*3+18
+         # when the augmentation is re-enabled in m130_ocp_setup.py.
 NU = 3
 _G = 9.80665
 
@@ -339,7 +340,11 @@ class MpcController:
             dr_act = self._last_delta_r
             da_act = self._last_delta_a
 
-        return np.array([
+        # Base 18-state vector. Pure-delay buffer states (NX-18) are
+        # internal to the solver; we cannot directly observe them, so we
+        # initialise them to the most recent commanded value (a reasonable
+        # warm-start that matches steady-state at the current command).
+        base = np.array([
             V, gamma, chi,
             float(omega[0]), float(omega[1]), float(omega[2]),
             alpha, beta, phi,
@@ -349,6 +354,14 @@ class MpcController:
             self._last_delta_e, self._last_delta_r, self._last_delta_a,
             de_act, dr_act, da_act,
         ])
+        n_buf_per_axis = (NX - 18) // 3
+        if n_buf_per_axis > 0:
+            # buffer ordering: pitch buffers first, then yaw, then roll
+            buf_e = np.full(n_buf_per_axis, self._last_delta_e)
+            buf_r = np.full(n_buf_per_axis, self._last_delta_r)
+            buf_a = np.full(n_buf_per_axis, self._last_delta_a)
+            return np.concatenate([base, buf_e, buf_r, buf_a])
+        return base
 
     def _get_params(self, t):
         if t < self.burn_time:

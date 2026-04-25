@@ -371,3 +371,8 @@ PARAM_DEFINE_FLOAT(ROCKET_MPC_TF, 1.6f);
  * @group Rocket MPC
  */
 PARAM_DEFINE_INT32(ROCKET_SITL_GPS, 0);
+
+// NOTE: a ROCKET_MPC_LA (lookahead stage) parameter would normally be
+// declared here, but the auto-generated px4_parameters.hpp does not
+// know about it without re-running the generator.  For now the value
+// is hardcoded in RocketMPC.cpp::Run() at MpcConfig initialisation.

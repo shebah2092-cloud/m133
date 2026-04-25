@@ -120,8 +120,8 @@ atmosphere:
 # ==========================================================================
 autopilot:
   mpc:
-    N_horizon: 80             # HITL: shorter horizon to fit ARM64+CAN load (best HIL score)
-    tf: 1.6                   # horizon 1.6s (dt_h = tf/N = 1.6/80 = 0.020s = control cadence)
+    N_horizon: 40             # ADPF + CPU-pinned: half the previous horizon. dt_h kept at 20ms to preserve control cadence.
+    tf: 0.8                   # horizon 0.8s (dt_h = tf/N = 0.8/40 = 0.020s = control cadence)
     t_ctrl: 0.3               # s - زمن بدء التحكم بعد الإطلاق
     dt_solve: 0.02            # s - فترة استدعاء MPC (كل 20ms)
     delta_rate_limit_dps: 250.0  # deg/s - حد معدل تغيير الزعانف (أقل من actuator.rate_max=270)
@@ -147,7 +147,7 @@ initial_conditions:
   position: [0.0, 0.0, 0.0]   # m (NED frame)
   velocity: [0.0, 0.0, 0.0]   # m/s
   attitude: [0.0, 0.0, 0.0, 0.0]  # quaternion (65° pitch, 0° yaw = north) - steep launch to minimize drag losses
-  angular_velocity: [0.0, 0.0, 0.0]  # rad/s — فقط yaw rate (~28.6°/s) كـ disturbance ابتدائي
+  angular_velocity: [0.1, 0.0, 0.0]  # rad/s — yaw rate ~28.6°/s كـ disturbance ابتدائي
   attitude_degrees: [0, 15, 0]  # roll=0°, pitch=15°, yaw=0°
 
 # ==========================================================================

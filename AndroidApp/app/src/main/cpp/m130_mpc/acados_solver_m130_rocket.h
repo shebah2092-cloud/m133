@@ -64,7 +64,7 @@
 #define M130_ROCKET_NY0    12
 #define M130_ROCKET_NY     12
 #define M130_ROCKET_NYN    9
-#define M130_ROCKET_N      80
+#define M130_ROCKET_N      40
 #define M130_ROCKET_NH     0
 #define M130_ROCKET_NHN    0
 #define M130_ROCKET_NH0    0

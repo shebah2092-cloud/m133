@@ -132,6 +132,12 @@ actuator:
   motor: "brushless"              # brushless | brushed
 
   # نوع النموذج: 1 = first-order | 2 = second-order with delay
+  # MODEL 2 (110ms shift-register delay) was tested but the cascade-of-
+  # first-order-lags MPC augmentation (m130_acados_model.py) cannot
+  # accurately represent that pure-delay shape — score collapsed to
+  # 22-38/100 with 600+ solver MINSTEP errors. Reverting to MODEL 1
+  # (first-order tau_servo=0.025) until either the MPC model uses Padé
+  # approximation or the simulator cascades match the MPC.
   model: 1
 
   # معاملات النموذج من الدرجة الأولى (model: 1)
@@ -147,10 +153,16 @@ actuator:
   tau_servo: 0.025                # s - kept at 0.025; see comment above
 
   # معاملات النموذج من الدرجة الثانية (model: 2)
+  # wn / zeta_wn fast (~10ms time constant) so the dynamic component is
+  # similar to the bench-measured first-order tau; the pure delay below
+  # carries the 110ms transport lag separately.
   wn: 100.0                       # rad/s - التردد الطبيعي
   zeta_wn: 100.0                  # damping × wn (ζ=1.0 critically damped)
-  delay_steps: 2                  # خطوات التأخير
-  delay_buffer_size: 6            # حجم buffer التأخير
+  # delay_steps × sim_dt = pure transport delay.
+  # sim dt = 0.01 s → delay_steps=11 ⇒ 110 ms (matches servo characterization).
+  # Reverted while delay augmentation in MPC is being refined.
+  delay_steps: 2
+  delay_buffer_size: 6
 
   # الحدود الفيزيائية
   delta_max: 20.0                 # deg - أقصى انحراف

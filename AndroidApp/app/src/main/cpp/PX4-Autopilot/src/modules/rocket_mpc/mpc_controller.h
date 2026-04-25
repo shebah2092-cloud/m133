@@ -58,6 +58,14 @@ struct MpcConfig {
 
 	// MHE blend
 	float quality_gate_thr = 0.3f;
+
+	// ── Dead-time compensation: extract fin commands from a future
+	// horizon stage instead of stage 1, so the command applied at the
+	// servo arrives "on schedule" despite the CAN+MCU transport delay.
+	// stage k corresponds to (k * tf/N_horizon) seconds ahead;
+	// at tf=4s/N=200 each stage = 20ms.  Default 1 == legacy behaviour.
+	// Real-hardware lag is ≈110ms ⇒ lookahead_stage ≈ 6 (= 120ms).
+	int   lookahead_stage = 1;
 };
 
 struct MpcSolveResult {
@@ -99,7 +107,7 @@ public:
 
 private:
 	void _compute_weights(float t_flight, float gamma, float gamma_ref_prev,
-			      float phi,
+			      float phi, float p_rate,
 			      float alpha, float q_rate, float x_pos,
 			      bool cruise_alt_set, float h_ref_scaled,
 			      double W[MPC_NY], double W_e[MPC_NYN]);

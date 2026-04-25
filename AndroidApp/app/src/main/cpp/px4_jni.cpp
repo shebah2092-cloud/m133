@@ -706,10 +706,14 @@ static void start_px4_modules(const std::string& storage_path) {
     // 11. MAVLink — UDP دائماً + CP210x telemetry إذا متصل
     {
         // UDP MAVLink — دائماً يعمل (للـ TCP bridge و WiFi)
+        // Raise MAVLink budget for DEBUG_FLOAT_ARRAY (SRV_FB + RktGNC).
+        // 10kB/s starves SRV_FB in HIL closed-loop and collapses servo feedback
+        // to single-digit Hz. 40kB/s is a practical middle ground that improves
+        // feedback rate without jumping to very high telemetry load.
         const char* mav_argv[] = {"mavlink", "start", "-u", "14550", "-o", "14551",
-                                  "-t", "127.0.0.1", "-r", "10000", "-m", "config", nullptr};
+                                  "-t", "127.0.0.1", "-r", "40000", "-m", "config", nullptr};
         mavlink_main(12, (char**)mav_argv);
-        LOGI("MAVLink started on UDP 14550, sending to 127.0.0.1:14551, rate=10000");
+        LOGI("MAVLink started on UDP 14550, sending to 127.0.0.1:14551, rate=40000");
 
         // TCP bridge — دائماً يعمل (TCP:5760 ↔ UDP:14550)
         mavlink_tcp_bridge_start(5760, 14550);
@@ -719,9 +723,17 @@ static void start_px4_modules(const std::string& storage_path) {
         std::thread([]() {
             sleep(1);
             const char* s_argv[] = {"mavlink", "stream", "-u", "14550",
-                                    "-s", "DEBUG_VECT", "-r", "50", nullptr};
+                                    "-s", "DEBUG_VECT", "-r", "20", nullptr};
             mavlink_main(8, (char**)s_argv);
-            LOGI("MAVLink: DEBUG_VECT stream enabled @50Hz on UDP 14550");
+            LOGI("MAVLink: DEBUG_VECT stream enabled @20Hz on UDP 14550");
+
+            // SRV_FB من xqpower_can يُنشَر كـ DEBUG_FLOAT_ARRAY (msg 350)
+            // الـ HIL bridge يعتمد عليه لاستقبال online_mask + cmd/fb/err.
+            // بدون تفعيل البثّ يبقى online_mask=0x00 ويُجهَض HIL بعد 500ms.
+            const char* s2_argv[] = {"mavlink", "stream", "-u", "14550",
+                                     "-s", "DEBUG_FLOAT_ARRAY", "-r", "40", nullptr};
+            mavlink_main(8, (char**)s2_argv);
+            LOGI("MAVLink: DEBUG_FLOAT_ARRAY stream enabled @40Hz on UDP 14550 (SRV_FB prioritized)");
         }).detach();
 
         // CP210x telemetry — إضافي إذا متصل (instance ثاني من MAVLink)
