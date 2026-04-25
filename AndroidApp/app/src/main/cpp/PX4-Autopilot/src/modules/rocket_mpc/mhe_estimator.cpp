@@ -369,15 +369,11 @@ MheOutput MheEstimator::update(float t)
 		memcpy(&yref_0[MHE_NMEAS + MHE_NU], _x_bar, MHE_NX * sizeof(double));
 		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, 0, "yref", yref_0);
 
-		// 3-way W selection:
-		//   fresh + vel_valid  → _W0_fresh    (full GPS: position + velocity)
-		//   fresh + !vel_valid → _W0_pos_only (position only, velocity zeroed)
-		//   !fresh             → _W0_stale    (no GPS at all)
-		const double *W0_sel = _W0_stale;
-
-		if (_meas_buf[idx0].gps_fresh) {
-			W0_sel = _meas_buf[idx0].gps_vel_valid ? _W0_fresh : _W0_pos_only;
-		}
+		// 2-way W selection: fresh GPS → full, stale → zeroed.
+		// Empirically the "pos_only" intermediate caused MHE divergence
+		// in PIL/HITL (velocity genuinely valid but flag flaky) that made
+		// MPC under-estimate climb rate and command premature pitch-down.
+		const double *W0_sel = _meas_buf[idx0].gps_fresh ? _W0_fresh : _W0_stale;
 
 		ocp_nlp_cost_model_set(_nlp_config, _nlp_dims, _nlp_in, 0, "W", (void *)W0_sel);
 	}

@@ -127,8 +127,12 @@ bool XqpowerCan::init()
 		_servo_init_sequence();
 	}
 
-	/* Run at 100 Hz on all platforms */
-	ScheduleOnInterval(10000);  /* 100 Hz */
+	/* Run at 200 Hz on all platforms — reduces sampling jitter on the
+	 * cmd→CAN path.  At 100 Hz a command published in uORB can wait up
+	 * to 10 ms before xqpower_can picks it up; at 200 Hz that half-period
+	 * is 2.5 ms.  Measured HIL pure-delay was ~120 ms; every ms shaved
+	 * here comes directly off the cmd→fin_can lag. */
+	ScheduleOnInterval(5000);   /* 200 Hz */
 
 	return true;
 }
@@ -1103,15 +1107,15 @@ void XqpowerCan::_servo_init_sequence()
 
 	PX4_INFO("NMT Start sent to all servos");
 
-	/* Step 2: Configure report interval (from XQCAN_FB_MS param).
-	 * Driver clamps <10 ms up to 10 ms; we clamp >255 ms down so the
-	 * uint8_t CAN payload byte doesn't wrap.
+	/* Step 2: Configure report interval.
+	 * Apr 25 2026 HARDCODE TEST: ignore stored param (likely 10 ms from
+	 * older builds) and force 2 ms PDO auto-report.  The servo firmware
+	 * may reject this and stay at its internal minimum, but `CAN RX:`
+	 * stats will tell us the actual rate.  Revert to param-driven once
+	 * the optimal interval is known.
 	 */
-	int32_t fb_ms_param = _param_fb_interval_ms.get();
-	if (fb_ms_param < 10)  { fb_ms_param = 10; }
-	if (fb_ms_param > 255) { fb_ms_param = 255; }
-	const uint8_t fb_interval_ms = (uint8_t)fb_ms_param;
-	PX4_INFO("Configuring PDO auto-report interval: %u ms (XQCAN_FB_MS)",
+	const uint8_t fb_interval_ms = 2;
+	PX4_INFO("Configuring PDO auto-report interval: %u ms (HARDCODED 2ms TEST)",
 		 (unsigned)fb_interval_ms);
 	for (int i = 0; i < XQPOWER_MAX_SERVOS; i++) {
 		servo_set_report_interval(i, fb_interval_ms);

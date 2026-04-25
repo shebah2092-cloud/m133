@@ -76,6 +76,12 @@ static constexpr float SOLVER_DELTA_MAX_RAD = 0.3490658503988659f;   // 20° in 
 //     the MHE force/moment prediction, silently corrupting alpha and
 //     gyro_bias estimates.
 // To change tau, regenerate the solver AND update this constant.
+// 0.025 s = open-loop bench figure for KST X20.  An attempt to use 0.130
+// (cross-correlation lag measured in HIL) made HIL WORSE because the
+// real lag is dominated by *pure transport delay* (CAN PDO 100 Hz +
+// servo MCU + encoder discretisation), NOT first-order filtering.  A
+// proper second-order-with-delay model would be needed.  Keeping 0.025
+// for first-order-only filter consistency with PIL/SITL.
 static constexpr float SOLVER_TAU_SERVO_S = 0.025f;
 
 // Natural gamma from thrust/mass/gravity (called with param values)
@@ -442,6 +448,8 @@ void RocketMPC::_reset_flight_state()
 	// Actuator / servo caches (physical commands from last solve)
 	_de_act = 0.0f; _dr_act = 0.0f; _da_act = 0.0f;
 	memset(_last_fins, 0, sizeof(_last_fins));
+	memset(_last_good_fins, 0, sizeof(_last_good_fins));
+	_fin_nan_hold_count = 0;
 	_last_de = 0.0f; _last_dr = 0.0f; _last_da = 0.0f;
 	_last_mpc_solve_time = 0;
 
@@ -1047,20 +1055,75 @@ void RocketMPC::Run()
 		if (smeas.valid && _launch_alt_captured) {
 			_mhe.push_measurement(t, smeas.y, smeas.gps_fresh, smeas.gps_vel_valid);
 
-			// Update actual fin positions (first-order lag) BEFORE passing to MHE.
-			// MHE model expects delta_*_act (physical fin position), not the command.
+			// Update actual fin positions BEFORE passing to MHE/MPC.
+			// MHE/MPC models expect delta_*_act (physical fin position), not the
+			// command — the difference is the τ-servo first-order lag baked
+			// into the acados model.
+			//
+			// Two paths:
+			//   1) HIL with real CAN servos: the xqpower_can driver publishes
+			//      `debug_array_s id=1 name="SRV_FB"` every 50 Hz with the
+			//      *measured* fin angles in data[4..7].  Use those directly via
+			//      inverse fin-mix — this matches the reference Python MPC
+			//      (m130_mpc_autopilot.py:331-340 reads `actuator_positions`
+			//      from the simulator and inverse-mixes the same way).
+			//   2) Otherwise (PIL/SITL/no CAN feedback): keep the original
+			//      first-order decay, which is consistent because the
+			//      simulator applies the same τ filter once on the command.
+			//
+			// Without this, HIL on real hardware fed the solver a model-only
+			// estimate of `delta_*_act` while the rocket aerodynamics actually
+			// experienced the (slightly different) physical CAN-servo angles.
+			// The growing mismatch made the QP infeasible from t≈3.7 s,
+			// freezing fin_cmd for the rest of the flight (root-cause of the
+			// HIL "fins stop early" bug — verified Apr 25 2026).
 			{
-				// Guard: if tau_servo is misconfigured (=0), the division would
-				// produce inf or NaN. Clamp tau to a minimum of 0.1 ms.
-				float tau = _mpc.config().tau_servo;
+				bool used_can_feedback = false;
 
-				if (tau < 1e-4f) { tau = 1e-4f; }
+				if (_hitl) {
+					debug_array_s dbg_srv{};
+					if (_debug_array_sub.copy(&dbg_srv)
+					    && dbg_srv.id == 1
+					    && (now - dbg_srv.timestamp) < 200_ms
+					    && strncmp(dbg_srv.name, "SRV_FB", 6) == 0) {
 
-				constexpr float MPC_PERIOD_S = 0.020f;
-				float decay = expf(-MPC_PERIOD_S / tau);
-				_de_act = _de_act * decay + delta_e * (1.0f - decay);
-				_dr_act = _dr_act * decay + delta_r * (1.0f - decay);
-				_da_act = _da_act * decay + delta_a * (1.0f - decay);
+						const uint8_t mask = (uint8_t)dbg_srv.data[12];
+
+						if (mask == 0x0F) {  // all four servos online
+							const float k = (float)M_PI / 180.0f;  // deg → rad
+							const float f1 = dbg_srv.data[4] * k;
+							const float f2 = dbg_srv.data[5] * k;
+							const float f3 = dbg_srv.data[6] * k;
+							const float f4 = dbg_srv.data[7] * k;
+
+							// Inverse fin-mix (matches mpc_controller.h header):
+							//   fin1 = δa - δe - δr
+							//   fin2 = δa - δe + δr
+							//   fin3 = δa + δe + δr
+							//   fin4 = δa + δe - δr
+							_de_act = 0.25f * (-f1 - f2 + f3 + f4);
+							_dr_act = 0.25f * (-f1 + f2 + f3 - f4);
+							_da_act = 0.25f * ( f1 + f2 + f3 + f4);
+
+							used_can_feedback = true;
+						}
+					}
+				}
+
+				if (!used_can_feedback) {
+					// Fallback: simulated first-order servo lag on the command.
+					// Guard: if tau_servo is misconfigured (=0), the division
+					// would produce inf or NaN. Clamp tau to a minimum of 0.1 ms.
+					float tau = _mpc.config().tau_servo;
+
+					if (tau < 1e-4f) { tau = 1e-4f; }
+
+					constexpr float MPC_PERIOD_S = 0.020f;
+					float decay = expf(-MPC_PERIOD_S / tau);
+					_de_act = _de_act * decay + delta_e * (1.0f - decay);
+					_dr_act = _dr_act * decay + delta_r * (1.0f - decay);
+					_da_act = _da_act * decay + delta_a * (1.0f - decay);
+				}
 			}
 
 			// MHE parameters must match m130_mhe_model.py:
@@ -1671,16 +1734,45 @@ void RocketMPC::Run()
 	}
 
 	// ---- Publish actuator outputs (always, to be sole authority) ----
-	// Final NaN guard: if any fin command is non-finite, zero ALL fins to
-	// prevent hardware damage.  NaN comparisons are always false, so the
-	// downstream constrain/clamp cannot catch them.
+	// Final NaN guard: if any fin command is non-finite, fall back to the
+	// LAST KNOWN GOOD values rather than zero.  Zeroing _last_fins created
+	// a permanent latch: a single MHE-induced NaN at t≈burn_time caused
+	// every subsequent skip_solve cycle to publish fin=0, freezing the
+	// physical servos at neutral for the rest of the flight (user-reported
+	// "servos move only ~3 s and then stop" symptom).  Holding the last
+	// good command preserves trim during a one-cycle solver hiccup, while
+	// repeated NaNs simply hold that same trim instead of zeroing — better
+	// than letting the rocket fly fully un-trimmed and matches typical
+	// industrial servo-loop fault behaviour (last-good hold).
+	bool fin_nan_this_cycle = false;
 	for (int i = 0; i < 4; ++i) {
 		if (!std::isfinite(fin[i])) {
-			PX4_ERR("NaN in fin[%d] — zeroing all fins", i);
-			fin[0] = fin[1] = fin[2] = fin[3] = 0.0f;
-			_last_fins[0] = _last_fins[1] = _last_fins[2] = _last_fins[3] = 0.0f;
+			fin_nan_this_cycle = true;
 			break;
 		}
+	}
+	if (fin_nan_this_cycle) {
+		// Use last-known-good (do NOT clobber _last_fins itself).
+		fin[0] = _last_good_fins[0];
+		fin[1] = _last_good_fins[1];
+		fin[2] = _last_good_fins[2];
+		fin[3] = _last_good_fins[3];
+		++_fin_nan_hold_count;
+		if (_fin_nan_hold_count == 1 || (_fin_nan_hold_count % 50) == 0) {
+			PX4_ERR("NaN fin — holding last-good [%.2f %.2f %.2f %.2f]° (count=%u)",
+				(double)_last_good_fins[0] * 57.2958,
+				(double)_last_good_fins[1] * 57.2958,
+				(double)_last_good_fins[2] * 57.2958,
+				(double)_last_good_fins[3] * 57.2958,
+				_fin_nan_hold_count);
+		}
+	} else {
+		_fin_nan_hold_count = 0;
+		// Update last-known-good only when ALL fins are finite.
+		_last_good_fins[0] = fin[0];
+		_last_good_fins[1] = fin[1];
+		_last_good_fins[2] = fin[2];
+		_last_good_fins[3] = fin[3];
 	}
 
 	// HIL/SITL: publish radians to actuator_outputs_sim (XqpowerCan HIL branch expects rad).

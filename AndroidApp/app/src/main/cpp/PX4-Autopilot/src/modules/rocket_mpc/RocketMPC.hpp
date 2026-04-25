@@ -192,6 +192,14 @@ private:
 	float _last_de{0.0f}, _last_dr{0.0f}, _last_da{0.0f};
 	hrt_abstime _last_mpc_solve_time{0};
 
+	// Last-known-good fin commands.  Used by the publish-side NaN guard
+	// as a safe fallback instead of zeroing.  Updated only when all four
+	// fins this cycle are finite.  See RocketMPC.cpp NaN guard comment
+	// (~line 1733) for the bug this fixes (servos freezing at 0° after
+	// burnout when MHE briefly produced a NaN that latched _last_fins=0).
+	float    _last_good_fins[4] {0.0f, 0.0f, 0.0f, 0.0f};
+	uint32_t _fin_nan_hold_count{0};
+
 	// ── Cumulative per-flight event counters (surfaced in rocket_gnc_status
 	//    so transient events are not lost between MAVLink DEBUG_FLOAT_ARRAY
 	//    samples, which fire at 20 Hz vs. the 100 Hz+ publish rate.) All

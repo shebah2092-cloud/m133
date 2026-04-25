@@ -4,6 +4,13 @@ target:
     host: 0.0.0.0
     port: 4560
     timeout_s: 600.0
+  # MAVLink full channel (port 5760) — DEBUG_VECT timing + PARAM_VALUE.
+  # Ethernet path: phone exposes mavlink_tcp_bridge on 0.0.0.0:5760, PC
+  # connects directly to phone's Ethernet IP. Old USB-tunnel path used
+  # 127.0.0.1 with `adb forward tcp:5760 tcp:5760`.
+  mavlink_tcp:
+    host: 10.42.0.174
+    port: 5760
   serial:
     device: /dev/ttyACM0
     baud: 921600
@@ -22,7 +29,8 @@ warmup:
   set_hitl_param: true      # تفعيل SYS_HITL=1 عبر PARAM_SET قبل warm-up
   hitl_param_timeout_s: 5.0 # مهلة انتظار PARAM_VALUE المؤكد (على قناة 5760)
   clear_flight_termination: true  # إرسال DO_FLIGHTTERMINATION=0 قبل ARM
-  preflight_reset: true     # force-stop للتطبيق + إعادة إعداد adb reverse/forward قبل بدء الجسر
+  preflight_reset: false    # Ethernet path: phone connects directly to PC at 10.42.0.1:4560
+                            # — adb reverse/forward not applicable. PX4 already running via Ethernet.
   abort_on_no_actuator: true  # افشل صراحة إن لم يصل HIL_ACTUATOR_CONTROLS خلال warm-up
                               # (مؤشر على SYS_HITL غير مُفعَّل أو simulator_mavlink ساقط)
 # ─── إعدادات خاصة بـ HIL ──────────────────────────────────────────────────

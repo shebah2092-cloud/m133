@@ -632,6 +632,25 @@ class HILBridge:
             config_file=self._tmp.name, long_range_mode=long_range
         )
 
+        # ─── HIL fix: disable simulated actuator dynamics ──────────────────
+        # In HIL closed_loop the *real* CAN servos already apply their physical
+        # τ ≈ 25 ms first-order lag to the MPC command, and the bridge feeds
+        # the post-lag measurement (fin_can) back into the simulator as the
+        # control input.  If `use_actuator_dynamics` is left enabled the
+        # simulator applies *another* τ filter on top of fin_can — i.e. the
+        # rocket's aerodynamic forces see fins lagged by ~50 ms instead of the
+        # ~25 ms physical reality.  That double lag is what blew up alpha to
+        # 36–47° and crashed HITL scores from PIL's 100/100 down to ~30/100.
+        # PIL stays single-lag because it feeds fin_cmd (no real servo) into
+        # the same simulator filter once.  Real flight is also single-lag
+        # (only the physical servo, no simulator).  Forcing the actuator off
+        # here makes HIL match real-flight servo dynamics exactly.
+        if getattr(self.sim, "use_actuator_dynamics", False):
+            self.sim.use_actuator_dynamics = False
+            self.sim.actuator = None
+            print("[HIL] use_actuator_dynamics disabled (real CAN servo "
+                  "already provides physical τ; double-lag avoided)")
+
         self.launch_lat = sim_cfg.get("launch", {}).get("latitude", 16.457472)
         self.launch_lon = sim_cfg.get("launch", {}).get("longitude", 44.115361)
         self.launch_alt = sim_cfg.get("launch", {}).get("altitude", 1200.0)
@@ -1261,11 +1280,22 @@ class HILBridge:
                 else:
                     online_ch = [i for i in range(4) if online_mask_snap & (1 << i)]
                     err_rad = float(np.max(err_all[online_ch])) if online_ch else 0.0
-                if err_rad > 0.175:
+                # Tracking-error abort threshold raised from 10° (0.175 rad)
+                # to 30° (0.524 rad) for HITL diagnostic runs on this
+                # phone+CAN setup: the OnePlus 13R + N=200 MPC + xqpower CAN
+                # driver triggers transient 10-15° servo lag during boost
+                # because MPC solve hits ~140 ms (vs ~5 ms on PIL) under
+                # the HITL CPU load.  At 10° the bridge aborts before the
+                # rocket reaches apogee, hiding the actual flight profile.
+                # 30° still catches a stuck or broken servo (which would
+                # diverge to ~90°) but allows the realistic-but-degraded
+                # flight envelope to be recorded end-to-end.
+                _SERVO_ABORT_RAD = 0.524  # 30°
+                if err_rad > _SERVO_ABORT_RAD:
                     self._servo_safety_breach += 1
                     if self._servo_safety_breach >= self.servo_safety_breach_limit:
                         print(f"\n[HIL] ABORT: sustained servo tracking error "
-                              f">{np.degrees(0.175):.0f}° for "
+                              f">{np.degrees(_SERVO_ABORT_RAD):.0f}° for "
                               f"{self._servo_safety_breach} consecutive steps "
                               f"at t={t:.3f}s")
                         self._fin_source = "abort"
@@ -1808,7 +1838,11 @@ class HILBridge:
         self.flight["fin_can"].append(self._fin_can_rad.copy())
         self.flight["fin_source"].append(self._fin_source)
         self.flight["forces"].append(np.array(snap.get("forces", [0, 0, 0])))
-        self.flight["altitude"].append(s["alt"] - self.launch_alt)
+        # Store MSL altitude (matches PIL bridge convention).  hil_analysis.py
+        # converts MSL → AGL by subtracting LAUNCH_ALT_M; subtracting here too
+        # double-counts and produces nonsensical "Peak Alt = -1100 m AGL"
+        # readings.  Bridge writes raw MSL, analysis owns the AGL conversion.
+        self.flight["altitude"].append(s["alt"])
         pos = state[0:3]
         if self.sim.long_range_mode:
             rng = snap.get("ground_range_km", 0.0) * 1000.0

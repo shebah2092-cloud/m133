@@ -135,7 +135,16 @@ actuator:
   model: 1
 
   # معاملات النموذج من الدرجة الأولى (model: 1)
-  tau_servo: 0.025                # s - ثابت الزمن (محافظ — XQPOWER تحت حمل)
+  # 0.025 s = open-loop bench figure for KST X20.  In HIL we measured
+  # a 120-150 ms `fin_cmd→fin_can` cross-correlation lag, but a τ=0.130
+  # in the model produced WORSE HIL results (score dropped 32→23) because
+  # the real lag is dominated by *pure transport delay* (CAN PDO sampling
+  # + servo MCU latency + encoder discretisation), NOT first-order
+  # filtering.  acados first-order model cannot represent pure delay; a
+  # second-order model with explicit delay would be needed.  Keeping
+  # 0.025 because it matches the dynamic component and is consistent
+  # across PIL/SITL/MPC.
+  tau_servo: 0.025                # s - kept at 0.025; see comment above
 
   # معاملات النموذج من الدرجة الثانية (model: 2)
   wn: 100.0                       # rad/s - التردد الطبيعي

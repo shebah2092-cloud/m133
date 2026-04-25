@@ -6,9 +6,11 @@
 #include <jni.h>
 #include <android/log.h>
 #include <string>
+#include <cstring>
 #include <thread>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/system_properties.h>
 #include <pthread.h>
 
 #include "shared_sensor_data.h"
@@ -216,6 +218,29 @@ static void start_px4_modules(const std::string& storage_path) {
             p = param_find("CAL_GYRO0_ID");
             if (p != PARAM_INVALID) { int32_t v = 1310988; param_set(p, &v); }
             LOGI("HITL: CAL_ACC0_ID/CAL_GYRO0_ID = 1310988 (sim sensor)");
+
+            // ===== HITL: stop native_sensor_reader =====
+            // In HITL the IMU/Baro/Mag data is supplied by the simulator
+            // over TCP (HIL_SENSOR), not by the phone's hardware. The
+            // native sensor thread polls the phone IMU at ~400 Hz, baro
+            // at 25 Hz and mag at 100 Hz — pure CPU load with no benefit
+            // in HITL because android_uorb_publishers already drops these
+            // when SYS_HITL=1. Stopping the producer thread frees ~5-15%
+            // CPU which the MPC solver desperately needs (HITL was
+            // hitting 22% deadline misses with avg=21.8 ms / max=140 ms
+            // vs PIL avg=5.6 ms on the same hardware).
+            native_sensor_stop();
+            LOGI("HITL: native_sensor_reader stopped (sensors come from TCP)");
+
+            // ===== HITL: stop gps_usb_ubx polling =====
+            // GPS data in HITL also comes from the simulator (HIL_GPS over
+            // TCP).  The gps_usb_ubx thread otherwise sits in a 1 Hz USB
+            // device-discovery poll waiting for a u-blox/PL2303 to appear,
+            // and once attached it would push competing GPS samples into
+            // EKF2.  Stopping it removes one more thread from the busy
+            // big-cluster cores so the MPC solver gets a fairer slice.
+            gps_usb_ubx_stop();
+            LOGI("HITL: gps_usb_ubx stopped (GPS comes from TCP)");
         }
 
         // ===== كشف تغيّر الـ airframe =====
@@ -721,11 +746,25 @@ static void start_px4_modules(const std::string& storage_path) {
         pwm_out_sim_main(2, (char**)pwmsim_argv);
         LOGI("pwm_out_sim started (HITL mode)");
 
-        // 12c. PIL/HITL: simulator_mavlink client → connects to 127.0.0.1:4560
-        //      On Android+USB use: adb reverse tcp:4560 tcp:4560 (tunnel to PC)
-        const char* simmav_argv[] = {"simulator_mavlink", "start", "-t", "127.0.0.1", "4560", nullptr};
+        // 12c. PIL/HITL: simulator_mavlink client → connects to PC bridge
+        //      Target IP is read from system property `persist.m130.target_ip`
+        //      (defaults to "10.42.0.1" — PC's IP on the shared-connection
+        //      Ethernet subnet created by NetworkManager).
+        //      Fallbacks in priority order:
+        //        1. persist.m130.target_ip  (set via: adb shell setprop ...)
+        //        2. "10.42.0.1"             (Ethernet — NetworkManager default)
+        //        3. "127.0.0.1"             (legacy USB adb reverse tunnel)
+        //      Ethernet path gives ~2 ms round-trip instead of ~70 ms over
+        //      adb-reverse-TCP-over-USB, which lets the MPC solver see fresh
+        //      state and escape the low-arc local minimum on ARM64.
+        static char target_ip[64] = {0};
+        __system_property_get("persist.m130.target_ip", target_ip);
+        if (target_ip[0] == '\0') {
+            strncpy(target_ip, "127.0.0.1", sizeof(target_ip) - 1);
+        }
+        const char* simmav_argv[] = {"simulator_mavlink", "start", "-t", target_ip, "4560", nullptr};
         simulator_mavlink_main(5, (char**)simmav_argv);
-        LOGI("simulator_mavlink started (client → 127.0.0.1:4560)");
+        LOGI("simulator_mavlink started (client → %s:4560)", target_ip);
 
         // 12d. HITL auto-arm: في وضع HITL لا يوجد RC/GCS حقيقي. نطلق خيطاً
         //      يقوم بالتسلّح القسري بعد استقرار تدفّق المستشعرات (~3s).
