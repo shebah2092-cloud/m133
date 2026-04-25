@@ -31,6 +31,10 @@ warmup:
   # المدة القصوى لانتظار تسليم PX4 ووصول أول HIL_ACTUATOR_CONTROLS.
   duration_s: 30.0
   # مهلة استقرار إضافية بعد أول actuator msg قبل بدء حلقة الرحلة.
+  # اختُبِر warmup 40s ولم يُقرّب trajectory من SITL (بل زاد الاختلاف):
+  # فرق peak altitude بين SITL و PIL ليس EKF2 transient، بل numerical
+  # differences بين ARM64 NEON و x86_64 SSE في MPC/MHE solver iterations.
+  # هذا فرق واقعي بين architectures لا يمكن إصلاحه عبر config.
   settle_after_arm_s: 15.0
   # إذا لم تصل أي HIL_ACTUATOR_CONTROLS خلال warm-up، أفشل صراحةً بدلاً من
   # المتابعة بأصفار (SYS_HITL=0 أو simulator_mavlink غير متصل هي الأسباب الشائعة).

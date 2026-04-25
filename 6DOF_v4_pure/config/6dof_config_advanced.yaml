@@ -120,8 +120,8 @@ atmosphere:
 # ==========================================================================
 autopilot:
   mpc:
-    N_horizon: 100            # horizon stages. Combined with MPC rate 25Hz in PX4 (40ms deadline)
-    tf: 2.0                   # horizon 2s (dt_h = tf/N = 2.0/100 = 0.020s = control cadence)
+    N_horizon: 200            # horizon stages. N=200 + cond_N=10 for ARM64 realtime
+    tf: 4.0                   # horizon 4s (dt_h = tf/N = 4.0/200 = 0.020s = control cadence)
     t_ctrl: 0.3               # s - زمن بدء التحكم بعد الإطلاق
     dt_solve: 0.02            # s - فترة استدعاء MPC (كل 20ms)
     delta_rate_limit_dps: 250.0  # deg/s - حد معدل تغيير الزعانف (أقل من actuator.rate_max=270)
@@ -147,7 +147,7 @@ initial_conditions:
   position: [0.0, 0.0, 0.0]   # m (NED frame)
   velocity: [0.0, 0.0, 0.0]   # m/s
   attitude: [0.0, 0.0, 0.0, 0.0]  # quaternion (65° pitch, 0° yaw = north) - steep launch to minimize drag losses
-  angular_velocity: [0.0, 0.0, 0.0]  # rad/s — متوسط (~5.7°/s roll, ~28.6°/s pitch, ~28.6°/s yaw)
+  angular_velocity: [0.0, 0.0, 0.0]  # rad/s — فقط yaw rate (~28.6°/s) كـ disturbance ابتدائي
   attitude_degrees: [0, 15, 0]  # roll=0°, pitch=15°, yaw=0°
 
 # ==========================================================================

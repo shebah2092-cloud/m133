@@ -15,7 +15,7 @@ extern "C" {
 static constexpr int MPC_NX = M130_ROCKET_NX;   // 18
 static constexpr int MPC_NU = M130_ROCKET_NU;    // 3
 static constexpr int MPC_NP = M130_ROCKET_NP;    // 2
-static constexpr int MPC_N  = M130_ROCKET_N;     // 200
+static constexpr int MPC_N  = M130_ROCKET_N;     // 100
 static constexpr int MPC_NY = M130_ROCKET_NY;    // 12
 static constexpr int MPC_NYN = M130_ROCKET_NYN;  // 9
 
@@ -25,9 +25,9 @@ static constexpr float X_SCALE = 1000.0f;
 static constexpr float Y_SCALE = 1000.0f;
 
 struct MpcConfig {
-	// Horizon
-	int   N_horizon       = 200;
-	float tf              = 4.0f;
+	// Horizon — MUST match solver (c_generated_code M130_ROCKET_N)
+	int   N_horizon       = MPC_N;   // uses solver's actual N (now 200)
+	float tf              = 4.0f;   // matches solver tf (N=200 * dt=20ms = 4s)
 	float t_ctrl          = 0.3f;
 
 	// Target

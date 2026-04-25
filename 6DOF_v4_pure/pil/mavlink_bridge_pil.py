@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import yaml
@@ -368,6 +368,89 @@ def _mag_body(lat_deg, quat):
 
 
 # ============================================================================
+# مولّد ضجيج الحسّاسات
+# ============================================================================
+# نسخة مستقلة (self-contained) من ``sitl.mavlink_bridge.SensorNoise``.
+# الغرض: جعل PIL يختبر EKF2 مع ضجيج واقعي من bridge.noise في الـ config
+# بدل ضجيج hardcoded مثالي — كان السبب الأساسي لعدم كشف مشاكل biases/drift
+# التي تظهر على ARM64 مع hardware. كل الخيارات تُقرأ من noise_cfg dict؛
+# غير المُعرَّف يرجع لقيم افتراضية تُطابق SITL تماماً.
+# نُسخت الفئة بدل import من sitl للحفاظ على استقلال الجسور (كما في HIL).
+
+
+class SensorNoise:
+    """Add realistic sensor noise to simulation outputs (mirrors SITL)."""
+
+    def __init__(self, config: dict, rng_seed: int = 42):
+        self.rng = np.random.default_rng(rng_seed)
+        noise_cfg = config.get('noise', {})
+        self.accel_std = noise_cfg.get('accel_std', 0.35)
+        self.gyro_std = noise_cfg.get('gyro_std', 0.005)
+        self.gps_pos_std = noise_cfg.get('gps_pos_std', 2.5)
+        self.gps_vel_std = noise_cfg.get('gps_vel_std', 0.1)
+        self.gps_delay_ms = noise_cfg.get('gps_delay_ms', 100)
+        self.mag_std = noise_cfg.get('mag_std', 0.005)
+        self.baro_std = noise_cfg.get('baro_std', 0.5)
+
+        # Multipliers for high-noise robustness testing
+        if noise_cfg.get('high_noise_enabled', False):
+            self.accel_std *= noise_cfg.get('high_noise_accel_multiplier', 3.0)
+            self.gyro_std *= noise_cfg.get('high_noise_gyro_multiplier', 3.0)
+
+        # Fixed IMU biases (constant per run) — تُحسب مرة واحدة عند __init__
+        # لذا أول استدعاء _sensors يحافظ على نفس bias طوال الرحلة.
+        accel_bias_std = noise_cfg.get('accel_bias_std', 0.05)
+        gyro_bias_std = noise_cfg.get('gyro_bias_std', 0.001)
+        self.accel_bias = self.rng.normal(0, accel_bias_std, 3)  # m/s²
+        self.gyro_bias = self.rng.normal(0, gyro_bias_std, 3)   # rad/s
+
+        # GPS delay buffer
+        self._gps_buffer: list = []
+
+    def add_imu_noise(self, accel: np.ndarray, gyro: np.ndarray
+                      ) -> Tuple[np.ndarray, np.ndarray]:
+        """Add noise + bias to IMU readings."""
+        noisy_accel = accel + self.accel_bias + self.rng.normal(0, self.accel_std, 3)
+        noisy_gyro = gyro + self.gyro_bias + self.rng.normal(0, self.gyro_std, 3)
+        return noisy_accel, noisy_gyro
+
+    def add_gps_noise(self, lat: float, lon: float, alt: float,
+                      vn: float, ve: float, vd: float, t_usec: int
+                      ) -> Optional[Tuple[float, float, float, float, float, float]]:
+        """Add noise + delay to GPS. Returns None if delayed data not ready."""
+        noisy_lat = lat + self.rng.normal(0, self.gps_pos_std / 111320.0)
+        noisy_lon = lon + self.rng.normal(
+            0, self.gps_pos_std / (111320.0 * max(np.cos(np.radians(lat)), 0.01))
+        )
+        noisy_alt = alt + self.rng.normal(0, self.gps_pos_std)
+        noisy_vn = vn + self.rng.normal(0, self.gps_vel_std)
+        noisy_ve = ve + self.rng.normal(0, self.gps_vel_std)
+        noisy_vd = vd + self.rng.normal(0, self.gps_vel_std)
+
+        self._gps_buffer.append((t_usec, noisy_lat, noisy_lon, noisy_alt,
+                                  noisy_vn, noisy_ve, noisy_vd))
+
+        delay_usec = self.gps_delay_ms * 1000
+        while len(self._gps_buffer) > 1:
+            if t_usec - self._gps_buffer[0][0] >= delay_usec:
+                _, lat_d, lon_d, alt_d, vn_d, ve_d, vd_d = self._gps_buffer.pop(0)
+                return lat_d, lon_d, alt_d, vn_d, ve_d, vd_d
+            break
+
+        if len(self._gps_buffer) == 1 and delay_usec == 0:
+            _, lat_d, lon_d, alt_d, vn_d, ve_d, vd_d = self._gps_buffer.pop(0)
+            return lat_d, lon_d, alt_d, vn_d, ve_d, vd_d
+
+        return None
+
+    def add_mag_noise(self, mag: np.ndarray) -> np.ndarray:
+        return mag + self.rng.normal(0, self.mag_std, 3)
+
+    def add_baro_noise(self, alt: float) -> float:
+        return alt + self.rng.normal(0, self.baro_std)
+
+
+# ============================================================================
 # جسر PIL
 # ============================================================================
 
@@ -422,7 +505,9 @@ class PILBridge:
             sim_cfg = yaml.safe_load(f)
         sim_cfg["simulation"]["control_type"] = "none"
         sim_cfg.setdefault("estimation", {})["mode"] = "off"
-        sim_cfg.setdefault("initial_conditions", {})["angular_velocity"] = [0.0, 0.0, 0.0]
+        # ملاحظة: سابقاً كان يُصفَّر angular_velocity هنا "لمطابقة baseline".
+        # لكن هذا يلغي أي initial conditions من config، فاختبارات yaw rate
+        # وغيرها لم تكن تُطبَّق فعلاً. الآن نحترم config.
 
         import tempfile
         self._tmp = tempfile.NamedTemporaryFile(
@@ -441,6 +526,15 @@ class PILBridge:
         self.launch_alt = sim_cfg.get("launch", {}).get("altitude", 1200.0)
 
         self.rng = np.random.default_rng(self.seed)
+
+        # ─── Noise generator ─────────────────────────────────────────────
+        # يقرأ من bridge.noise في sim config (نفس مصدر SITL/HIL).
+        # سابقاً كان PIL يستخدم hardcoded σ=0.1/0.002 فقط للـ IMU ويتجاهل
+        # mag/baro/GPS noise تماماً — بيانات مثالية غير واقعية تخفي مشاكل
+        # EKF2 biases/drift التي تظهر على ARM64. مع هذا التعديل يصبح PIL
+        # يُحاكي نفس ضجيج SITL (accel/gyro biases ثابتة + mag/baro + GPS delay).
+        noise_cfg = sim_cfg.get("bridge", {}).get("noise", {})
+        self.noise = SensorNoise({"noise": noise_cfg}, rng_seed=self.seed)
 
         # الشبكة
         self._sock: Optional[socket.socket] = None
@@ -688,20 +782,23 @@ class PILBridge:
         vel_ned = np.array(snapshot.get("vel_ned", vel))
         mag = _mag_body(lat, quat)
 
-        baro_pressure = 1013.25 * (1.0 - 2.25577e-5 * alt) ** 5.25588
         rho = 1.225 * (1.0 - 2.25577e-5 * alt) ** 4.25588
         airspeed = float(np.linalg.norm(vel))
         diff_p = 0.5 * rho * airspeed * airspeed / 100.0
 
-        # ضجيج خفيف (PIL يستخدم بيانات أنظف من SITL لتقليل ارتباك التوقيت)
-        accel_noisy = accel_body + self.rng.normal(0, 0.1, 3)
-        gyro_noisy = omega + self.rng.normal(0, 0.002, 3)
+        # ضجيج مبني على config (bridge.noise) — IMU/mag/baro يتلقون ضجيج
+        # واقعي + biases ثابتة لكل run. GPS noise + delay يُطبَّقان في
+        # _run_impl (لحظة البناء) لأنهم يحتاجون t_usec المُحدَّث.
+        noisy_accel, noisy_gyro = self.noise.add_imu_noise(accel_body, omega)
+        noisy_mag = self.noise.add_mag_noise(mag)
+        noisy_alt = self.noise.add_baro_noise(alt)
+        noisy_baro_p = 1013.25 * (1.0 - 2.25577e-5 * noisy_alt) ** 5.25588
 
         return {
-            "accel_body": accel_noisy, "gyro_body": gyro_noisy,
+            "accel_body": noisy_accel, "gyro_body": noisy_gyro,
             "accel_body_true": accel_body,
-            "mag_body": mag, "baro_p": baro_pressure, "diff_p": diff_p,
-            "pressure_alt": alt,
+            "mag_body": noisy_mag, "baro_p": noisy_baro_p, "diff_p": diff_p,
+            "pressure_alt": noisy_alt,
             "lat": lat, "lon": lon, "alt": alt,
             "vel_ned": vel_ned, "quat": quat, "omega": omega,
             "airspeed": airspeed,
@@ -833,11 +930,22 @@ class PILBridge:
                 ))
 
             if step % gps_every == 0:
-                self._send(build_hil_gps(
-                    self._sim_t_us,
+                # GPS noise + delay مبني على config: add_gps_noise يُرجع
+                # None خلال فترة delay الأولى (EKF2 لا يستقبل حتى يكتمل
+                # الـ buffer)، كما يحدث مع GPS حقيقي. يُحاكي NEO-M8N real
+                # behavior بدلاً من fix مثالي فوري.
+                gps_data = self.noise.add_gps_noise(
                     s["lat"], s["lon"], s["alt"],
                     s["vel_ned"][0], s["vel_ned"][1], s["vel_ned"][2],
-                ))
+                    self._sim_t_us,
+                )
+                if gps_data is not None:
+                    g_lat, g_lon, g_alt, g_vn, g_ve, g_vd = gps_data
+                    self._send(build_hil_gps(
+                        self._sim_t_us,
+                        g_lat, g_lon, g_alt,
+                        g_vn, g_ve, g_vd,
+                    ))
 
             if step % sensor_every == 0:
                 self._send(build_hil_sensor(

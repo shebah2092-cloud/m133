@@ -539,14 +539,15 @@ MpcSolveResult MpcController::solve(const double x_mpc[MPC_NX],
 	if (_consec_fails > 3) { n_rti = 8; }
 
 	// Time budget for the entire RTI loop.  Each m130_rocket_acados_solve()
-	// is a blocking call with no internal timeout.  PIL on Android showed
-	// single-iteration spikes up to 69 ms; without a budget check, multiple
-	// slow iterations accumulate and stall the whole control loop.  35 ms
-	// is generous for the warm-start case (typ. 3 × 5 ms) while still
-	// leaving headroom for the 20 ms control cadence + MHE + publish.
+	// is a blocking call with no internal timeout.  This budget is a safety
+	// net against pathological spikes only; under normal conditions all
+	// n_rti iterations should complete.
+	// Sizing: N=200 + cond_N=10 on ARM64 measures ~25 ms/iter, so 3 warm
+	// iterations = 75 ms nominal. Budget = 90 ms leaves ~20% headroom.
+	// For older N=100/tf=2 config, the budget is never reached (3×8 ms < 90 ms).
 	// A partial solve (fewer iterations) is safe: SQP_RTI produces a valid
 	// (if suboptimal) control action after every completed iteration.
-	static constexpr hrt_abstime SOLVE_BUDGET_US = 35'000;  // 35 ms
+	static constexpr hrt_abstime SOLVE_BUDGET_US = 90'000;  // 90 ms
 
 	hrt_abstime t0 = hrt_absolute_time();
 	bool ok = true;

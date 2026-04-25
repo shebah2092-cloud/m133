@@ -43,6 +43,10 @@ if _MPC_DIR not in sys.path:
 
 from m130_mhe_model import create_m130_mhe_model, build_m130_mhe_measurement_expr
 
+# Always generate into repo root c_generated_code/ (where build_m130_solvers_arm64.sh expects it)
+_CODE_EXPORT_DIR = str(Path(__file__).resolve().parent.parent.parent / "c_generated_code")
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 def _diag_inv_variance(stds):
     stds = np.asarray(stds, dtype=float)
@@ -236,6 +240,7 @@ def create_m130_mhe_ocp(estimation_cfg=None) -> AcadosOcp:
     ocp.solver_options.sim_method_num_stages = 4
     ocp.solver_options.sim_method_num_steps = 1  # faster integrator
     ocp.solver_options.tf = N_mhe * dt
+    ocp.code_export_directory = _CODE_EXPORT_DIR
 
     # Useful metadata for external code
     ocp.dims_nx_mhe = nx
@@ -248,6 +253,9 @@ def create_m130_mhe_ocp(estimation_cfg=None) -> AcadosOcp:
 
 def create_m130_mhe_solver(estimation_cfg=None, json_file="m130_mhe_ocp.json") -> AcadosOcpSolver:
     ocp = create_m130_mhe_ocp(estimation_cfg=estimation_cfg)
+    # Anchor json file to repo root so it matches MPC's m130_rocket.json location
+    if not os.path.isabs(json_file):
+        json_file = str(_REPO_ROOT / json_file)
     solver = AcadosOcpSolver(ocp, json_file=json_file)
     return solver
 

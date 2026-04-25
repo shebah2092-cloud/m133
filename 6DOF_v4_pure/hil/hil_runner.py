@@ -524,8 +524,18 @@ def main():
         run_hil(args.config, hil_csv, timing_csv)
 
     deadline_us = int(cfg.get("timing", {}).get("deadline_us", 20000))
-    report = compare(hil_csv, timing_csv, cfg["thresholds"],
+    report = compare(hil_csv, timing_csv, cfg.get("thresholds", {}),
                      deadline_us=deadline_us)
+
+    # تقرير HTML تفاعلي (hil_analysis.py)
+    try:
+        from hil_analysis import analyze_hil_csv
+        print("\n  Generating interactive HTML report …")
+        _, _, html = analyze_hil_csv(hil_csv, open_browser=not args.compare_only)
+        print(f"  HTML → {html}")
+    except (Exception, SystemExit) as exc:
+        print(f"  WARNING: HTML report generation failed: {exc}")
+
     sys.exit(0 if report.get("pass") else 1)
 
 

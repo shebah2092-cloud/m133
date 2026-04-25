@@ -511,9 +511,10 @@ class SITLBridge:
         import tempfile
         sim_config['simulation']['control_type'] = 'none'
         sim_config.setdefault('estimation', {})['mode'] = 'off'
-        # Zero initial angular velocity to match baseline behaviour
-        # (baseline MPC mode resets spin rate on init; bridge must do same)
-        sim_config.setdefault('initial_conditions', {})['angular_velocity'] = [0.0, 0.0, 0.0]
+        # Respect initial_conditions.angular_velocity from config.
+        # Previously this was forced to zero "to match baseline behaviour"
+        # but that silently cancelled any yaw/pitch-rate disturbance tests.
+        # Baseline MPC also reads the config value — no need to override here.
         self._tmp_cfg = tempfile.NamedTemporaryFile(
             mode='w', suffix='.yaml', delete=False, encoding='utf-8')
         yaml.dump(sim_config, self._tmp_cfg, allow_unicode=True,

@@ -543,24 +543,49 @@ def _fig_control(df):
 
 
 def _fig_3d_trajectory(df):
-    fig = go.Figure(data=[go.Scatter3d(
-        x=df["ground_range"].values,
-        y=np.zeros(len(df)),  # lateral
-        z=df["alt_agl_m"].values,
-        mode="lines",
-        line=dict(color=df["speed_total"].values, colorscale="Turbo", width=5,
-                  colorbar=dict(title="Speed (m/s)", x=1.05)),
-        text=[f"t={t:.1f}s<br>Alt={a:.0f}m<br>V={v:.0f}m/s<br>M={mach:.3f}"
-              for t, a, v, mach in zip(df["time_s"], df["alt_agl_m"], df["speed_total"], df["mach"])],
-        hoverinfo="text"
-    )])
-    fig.update_layout(
-        scene=dict(
-            xaxis_title="Range (m)", yaxis_title="Cross-range (m)", zaxis_title="Altitude (m)",
-            aspectmode="data"
-        ),
-        height=600, template="plotly_white", title="3D Trajectory (colored by speed)"
-    )
+    PHASE_COLORS = {
+        "BOOST": "#f44336", "COAST": "#2196f3", "TERMINAL": "#9c27b0",
+        "ARMED": "#9e9e9e", "LAUNCH": "#ff9800", "CRUISE": "#4caf50",
+        "BALLISTIC": "#795548",
+    }
+    has_pos = "pos_x" in df.columns and "pos_y" in df.columns
+    fig = go.Figure()
+    if has_pos and "flight_phase" in df.columns:
+        from collections import OrderedDict
+        for ph in OrderedDict.fromkeys(df["flight_phase"]):
+            mask = df["flight_phase"] == ph
+            c = PHASE_COLORS.get(ph, "#333")
+            fig.add_trace(go.Scatter3d(
+                x=df["pos_x"][mask], y=df["pos_y"][mask], z=df["alt_agl_m"][mask],
+                mode="lines", name=ph, line=dict(color=c, width=5), legendgroup=ph,
+                text=[f"t={t:.1f}s<br>Alt={a:.0f}m<br>V={v:.0f}m/s"
+                      for t, a, v in zip(df["time_s"][mask], df["alt_agl_m"][mask],
+                                         df["speed_total"][mask])],
+                hoverinfo="text"
+            ))
+        fig.update_layout(
+            scene=dict(xaxis_title="X North (m)", yaxis_title="Y East (m)",
+                       zaxis_title="Altitude (m)", aspectmode="data"),
+            height=650, template="plotly_white",
+            title="3D Trajectory (colored by flight phase)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02)
+        )
+    else:
+        fig.add_trace(go.Scatter3d(
+            x=df["ground_range"].values, y=np.zeros(len(df)), z=df["alt_agl_m"].values,
+            mode="lines",
+            line=dict(color=df["speed_total"].values, colorscale="Turbo", width=5,
+                      colorbar=dict(title="Speed (m/s)", x=1.05)),
+            text=[f"t={t:.1f}s<br>Alt={a:.0f}m<br>V={v:.0f}m/s<br>M={mach:.3f}"
+                  for t, a, v, mach in zip(df["time_s"], df["alt_agl_m"],
+                                           df["speed_total"], df["mach"])],
+            hoverinfo="text"
+        ))
+        fig.update_layout(
+            scene=dict(xaxis_title="Range (m)", yaxis_title="Cross-range (m)",
+                       zaxis_title="Altitude (m)", aspectmode="data"),
+            height=600, template="plotly_white", title="3D Trajectory (colored by speed)"
+        )
     return fig
 
 

@@ -346,7 +346,7 @@ PARAM_DEFINE_FLOAT(ROCKET_MHE_QG, 0.3f);
  * @decimal 1
  * @group Rocket MPC
  */
-PARAM_DEFINE_FLOAT(ROCKET_MPC_TF, 2.0f);
+PARAM_DEFINE_FLOAT(ROCKET_MPC_TF, 4.0f);
 
 /* ===================================================================
  *  Test mode
