@@ -1678,10 +1678,21 @@ void RocketMPC::Run()
 			x_mpc[16] = (double)_dr_act;
 			x_mpc[17] = (double)_da_act;
 
+			// Padé(2,2) transport-delay buffer states (indices 18..MPC_NX-1).
+			// At steady-state for input u: x1 = (D²/12)·u ≈ 0.001·u (negligible
+			// for D=0.110), x2 = 0. Zero-init is within rounding of true
+			// steady-state for typical commands; acados warm-start refines
+			// them. Without this, indices 18+ would carry garbage from stack.
+			for (int i = 18; i < MPC_NX; i++) {
+				x_mpc[i] = 0.0;
+			}
+
 			// Snapshot x_mpc for rocket_gnc_status (float32[18]).  We stash it
 			// before the NaN guard so the telemetry also shows the last rejected
-			// x_mpc when a bad state led to a skipped solve.
-			for (int i = 0; i < MPC_NX; i++) {
+			// x_mpc when a bad state led to a skipped solve. The telemetry array
+			// has 18 slots so we copy only the base states; Padé buffer states
+			// (indices 18+) are internal solver augmentation and not exposed.
+			for (int i = 0; i < 18; i++) {
 				_last_x_mpc[i] = (float)x_mpc[i];
 			}
 			_have_x_mpc = true;

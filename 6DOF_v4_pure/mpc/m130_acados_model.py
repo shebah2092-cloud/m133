@@ -36,7 +36,8 @@ from acados_template import AcadosModel
 
 def create_m130_model(launch_alt_val=1500.0, tau_servo_val=0.025,
                       tau_transport_val=0.110,  # CAN-bus + servo-MCU pure delay
-                      n_delay_buffers=2,         # cascade depth (2 → tau each = D/2)
+                      n_delay_buffers=2,         # Padé order per axis (2 = 2 states/axis)
+                      delay_model='pade',         # 'pade' or 'cascade'
                       mass_full_val=12.74, mass_dry_val=11.11,
                       # Default inertias match
                       # data/rocket_models/Qabthah1/rocket_properties.yaml
@@ -76,15 +77,30 @@ def create_m130_model(launch_alt_val=1500.0, tau_servo_val=0.025,
     delta_r_act = ca.SX.sym('delta_r_act')  # موضع yaw الفعلي (rad)
     delta_a_act = ca.SX.sym('delta_a_act')  # موضع roll الفعلي (rad)
 
-    # ── Pure-delay buffer states (cascade of N first-order lags) ──
-    # تمثّل تأخير النقل ~110ms على ناقل CAN + servo MCU. cascade من
-    # N first-order lags بـ τ = D/N يقارب pure-delay D. مع N=2 الإجمالي
-    # يضيف 6 states (2 لكل محور). الإصطفاف: delta_*_s → buf_*_1 → buf_*_2
-    # → delta_*_act (التي تطبّق lag السيرفو الفعلي tau_servo=25ms).
+    # ── Pure-delay augmentation states ──
+    # تمثّل تأخير النقل ~110ms على ناقل CAN + servo MCU.
+    #
+    # Padé(2,2) approximation (default): rational approximation of e^(-Ds)
+    # تحافظ على استجابة الطور وسرعة المجموعة بدقة عالية عند الترددات
+    # المهمة للتحكم (< 1/D Hz). عدد ال states = 2 لكل محور.
+    # State-space (controllable canonical):
+    #   ẋ₁ = x₂
+    #   ẋ₂ = -(12/D²) x₁ - (6/D) x₂ + u
+    #   y  = -(12/D) x₂ + u            ← feeds first-order servo lag
+    #
+    # Cascade fallback (اختياري): N first-order lags بـ τ=D/N. أبسط
+    # رياضياً لكن استجابة الطور غير دقيقة — فشل في HIL/standalone
+    # عند مطابقة الـ plant.
     Nb = max(int(n_delay_buffers), 0)
-    buf_e_states = [ca.SX.sym(f'buf_e_{k}') for k in range(Nb)]
-    buf_r_states = [ca.SX.sym(f'buf_r_{k}') for k in range(Nb)]
-    buf_a_states = [ca.SX.sym(f'buf_a_{k}') for k in range(Nb)]
+    if delay_model == 'pade':
+        # Padé always uses 2 states per axis (regardless of Nb — Nb retained
+        # for state-count compatibility with existing OCP indexing).
+        n_states_per_axis = 2 if Nb > 0 else 0
+    else:
+        n_states_per_axis = Nb
+    buf_e_states = [ca.SX.sym(f'buf_e_{k}') for k in range(n_states_per_axis)]
+    buf_r_states = [ca.SX.sym(f'buf_r_{k}') for k in range(n_states_per_axis)]
+    buf_a_states = [ca.SX.sym(f'buf_a_{k}') for k in range(n_states_per_axis)]
 
     state_list = [V, gamma, chi, p_rate, q_rate, r_rate, alpha, beta, phi,
                   h, x_ground, y_ground, delta_e_s, delta_r_s, delta_a_s,
@@ -345,34 +361,64 @@ def create_m130_model(launch_alt_val=1500.0, tau_servo_val=0.025,
     # الانحراف الجانبي المطبّع: y_dot = V*cos(gamma)*sin(chi) / 1000
     y_ground_dot = V_safe * cos_gamma * ca.sin(chi) * 0.001
 
-    # ──────────────────────────────────────────────
-    # ديناميكا المشغل: cascade تأخير النقل + lag السيرفو الفعلي
-    # delta_*_s ──[buf_1]──[buf_2]──...──[buf_Nb]──> delta_*_act
-    # كل buffer = first-order lag بـ τ = tau_transport / Nb
-    # delta_*_act = first-order lag بـ τ = tau_servo (الفعلي ~25ms)
-    # المجموع تقريباً: pure-delay 110ms + lag 25ms = 135ms net.
+    # ─────────────────────────────────────────────
+    # ديناميكا المشغل: تأخير النقل (Padé/cascade) + lag السيرفو الفعلي
+    # delta_*_s ──[delay-model]──> feed_* ──[1st-order τ=tau_servo]──> delta_*_act
     # ──────────────────────────────────────────────
     tau_safe = tau_servo  # ثابت عددي مدمج عند البناء
-    # If no buffers, fall back to direct first-order (legacy behaviour).
+
     if Nb == 0:
+        # No transport delay model — direct passthrough (legacy/fast actuators).
         feed_e, feed_r, feed_a = delta_e_s, delta_r_s, delta_a_s
         buffer_dots = []
+    elif delay_model == 'pade':
+        # ── Padé(2,2) state-space realization of e^(-Ds) ──
+        # Per-axis: state = [x1, x2], input u = delta_*_s, output y = feed_*
+        #   ẋ₁ = x₂
+        #   ẋ₂ = -(12/D²) x₁ - (6/D) x₂ + u
+        #   y  = -(12/D) x₂ + u
+        D = max(float(tau_transport_val), 1e-4)
+        inv_D  = 1.0 / D
+        inv_D2 = inv_D * inv_D
+        twelve_inv_D2 = 12.0 * inv_D2
+        six_inv_D     = 6.0  * inv_D
+        twelve_inv_D  = 12.0 * inv_D
+
+        # Pitch axis Padé (states: buf_e_states[0]=x1, buf_e_states[1]=x2)
+        pe1, pe2 = buf_e_states[0], buf_e_states[1]
+        pe1_dot = pe2
+        pe2_dot = -twelve_inv_D2 * pe1 - six_inv_D * pe2 + delta_e_s
+        feed_e  = -twelve_inv_D * pe2 + delta_e_s
+
+        # Yaw axis Padé
+        pr1, pr2 = buf_r_states[0], buf_r_states[1]
+        pr1_dot = pr2
+        pr2_dot = -twelve_inv_D2 * pr1 - six_inv_D * pr2 + delta_r_s
+        feed_r  = -twelve_inv_D * pr2 + delta_r_s
+
+        # Roll axis Padé
+        pa1, pa2 = buf_a_states[0], buf_a_states[1]
+        pa1_dot = pa2
+        pa2_dot = -twelve_inv_D2 * pa1 - six_inv_D * pa2 + delta_a_s
+        feed_a  = -twelve_inv_D * pa2 + delta_a_s
+
+        buffer_dots = [pe1_dot, pe2_dot,
+                       pr1_dot, pr2_dot,
+                       pa1_dot, pa2_dot]
     else:
+        # ── Cascade-of-first-order-lags fallback ──
         tau_buf = max(float(tau_transport_val), 1e-4) / Nb
         buffer_dots = []
-        # Pitch axis cascade
         prev = delta_e_s
         for st in buf_e_states:
             buffer_dots.append((prev - st) / tau_buf)
             prev = st
         feed_e = prev
-        # Yaw axis cascade
         prev = delta_r_s
         for st in buf_r_states:
             buffer_dots.append((prev - st) / tau_buf)
             prev = st
         feed_r = prev
-        # Roll axis cascade
         prev = delta_a_s
         for st in buf_a_states:
             buffer_dots.append((prev - st) / tau_buf)
@@ -397,7 +443,7 @@ def create_m130_model(launch_alt_val=1500.0, tau_servo_val=0.025,
     model.f_expl_expr = f_expl
 
     # ── الصيغة الضمنية (مطلوبة لـ IRK) ──
-    nx_total = 18 + 3 * Nb
+    nx_total = 18 + 3 * n_states_per_axis
     xdot = ca.SX.sym('xdot', nx_total)
     model.xdot = xdot
     model.f_impl_expr = xdot - f_expl

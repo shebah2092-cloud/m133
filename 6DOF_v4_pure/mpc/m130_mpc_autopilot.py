@@ -37,8 +37,9 @@ if _ACADOS_DIR.exists():
 
 from dynamics.quaternion_utils import quaternion_to_euler
 
-NX = 18  # base state vector. _extract_mpc_state pads to N_DELAY_BUFFERS*3+18
-         # when the augmentation is re-enabled in m130_ocp_setup.py.
+NX = 18  # 18 base states (no delay augmentation in MPC — see m130_ocp_setup.py).
+         # If N_DELAY_BUFFERS in m130_ocp_setup.py is set non-zero, this
+         # must become 18 + 3 * N_DELAY_BUFFERS.
 NU = 3
 _G = 9.80665
 
@@ -356,10 +357,14 @@ class MpcController:
         ])
         n_buf_per_axis = (NX - 18) // 3
         if n_buf_per_axis > 0:
-            # buffer ordering: pitch buffers first, then yaw, then roll
-            buf_e = np.full(n_buf_per_axis, self._last_delta_e)
-            buf_r = np.full(n_buf_per_axis, self._last_delta_r)
-            buf_a = np.full(n_buf_per_axis, self._last_delta_a)
+            # Padé(2,2) buffer states: at steady-state for input u,
+            #   x1 = (D²/12) * u  (≈0.001*u for D=0.110, negligible)
+            #   x2 = 0
+            # Zero-init is within rounding of true steady-state for typical
+            # commands; acados warm-start from previous solve refines them.
+            buf_e = np.zeros(n_buf_per_axis)
+            buf_r = np.zeros(n_buf_per_axis)
+            buf_a = np.zeros(n_buf_per_axis)
             return np.concatenate([base, buf_e, buf_r, buf_a])
         return base
 

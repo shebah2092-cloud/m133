@@ -132,13 +132,17 @@ actuator:
   motor: "brushless"              # brushless | brushed
 
   # نوع النموذج: 1 = first-order | 2 = second-order with delay
-  # MODEL 2 (110ms shift-register delay) was tested but the cascade-of-
-  # first-order-lags MPC augmentation (m130_acados_model.py) cannot
-  # accurately represent that pure-delay shape — score collapsed to
-  # 22-38/100 with 600+ solver MINSTEP errors. Reverting to MODEL 1
-  # (first-order tau_servo=0.025) until either the MPC model uses Padé
-  # approximation or the simulator cascades match the MPC.
-  model: 1
+  # MODEL-2 attempts to mirror the real CAN+servo transport delay in the
+  # standalone simulator, but the SQP_RTI MPC cannot cleanly augment that
+  # pure delay internally:
+  #   * cascade-of-lags → 22–38/100, 600+ ACADOS_MINSTEP errors
+  #   * Padé(2,2)        → 24/100,  ACADOS_NAN_DETECTED, full tumbling
+  # Both failures are documented in m130_ocp_setup.py.  We instead handle
+  # real-hardware delay in the application layer via mpc_controller.h's
+  # `lookahead_stage` (extract command from a future MPC stage), and keep
+  # the standalone simulator delay-free so it matches the known-good
+  # 100/100 baseline that the SITL/PIL chain has been validated against.
+  model: 1  # first-order, matches MPC's internal model
 
   # معاملات النموذج من الدرجة الأولى (model: 1)
   # 0.025 s = open-loop bench figure for KST X20.  In HIL we measured
@@ -161,8 +165,8 @@ actuator:
   # delay_steps × sim_dt = pure transport delay.
   # sim dt = 0.01 s → delay_steps=11 ⇒ 110 ms (matches servo characterization).
   # Reverted while delay augmentation in MPC is being refined.
-  delay_steps: 2
-  delay_buffer_size: 6
+  delay_steps: 11      # 11 × 0.01s = 110ms (matches MPC tau_transport)
+  delay_buffer_size: 16
 
   # الحدود الفيزيائية
   delta_max: 20.0                 # deg - أقصى انحراف

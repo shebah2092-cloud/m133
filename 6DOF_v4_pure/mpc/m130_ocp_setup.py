@@ -34,18 +34,42 @@ def create_m130_ocp(h_min=-0.7, rate_limit_rad=None,
                     Iyy_full_val=1.1651, Iyy_dry_val=1.0789,
                     Izz_full_val=1.166,  Izz_dry_val=1.0779,
                     xbc_max_val=0.0):
-    # ── Pure-delay augmentation: disabled (N=0). The first-order cascade
-    # cannot accurately represent the simulator's shift-register pure delay
-    # — attempts at N=2/4 produced solver MINSTEP errors and unstable
-    # flights. Re-enabling needs either (a) Padé approximation in the
-    # acados model, or (b) cascade-style delay in the simulator's actuator.
-    N_DELAY_BUFFERS = 0
-    TAU_TRANSPORT_S = 0.110  # measured CAN→fin delay (servo characterization)
+    # ── Pure-delay augmentation: DISABLED. ──
+    # Two delay-modeling approaches were attempted to capture the ≈110ms
+    # CAN→servo transport delay measured on real hardware:
+    #
+    #   1. Cascade of first-order lags (N=2, τ=55ms each): Score collapsed
+    #      to 22–38/100 with 600+ ACADOS_MINSTEP errors. Sluggish dynamics
+    #      cannot represent pure transport delay (no flat-then-step shape).
+    #
+    #   2. Padé(2,2) rational approximation of e^(-Ds): Mathematically the
+    #      best phase/group-delay match in s-domain, but the realization
+    #      has a non-minimum-phase time-domain response: feed_*(t→0+) =
+    #      u·(1 − 12·t/D), so for a step command the Padé output OVER-
+    #      SHOOTS to ~−5× the input within 18ms before settling. With
+    #      D=0.110s the high-frequency gain is 12/D ≈ 109, which makes
+    #      delta_*_act_dot stiff enough to break ERK4 (sim_method_num_steps
+    #      =2, sub-step=10ms) → ACADOS_NAN_DETECTED at the first SQP iter,
+    #      score collapsed to 24/100 with full tumbling (|α|=179°).
+    #
+    # Conclusion: pure transport delay cannot be cleanly augmented inside
+    # the SQP_RTI MPC without also slowing the integrator. The pragmatic
+    # alternative (used by m130) is dead-time compensation in the
+    # application layer via the `lookahead_stage` config in
+    # mpc_controller.h — the controller extracts the fin command from a
+    # future MPC stage instead of stage 1, so the command arrives at the
+    # servo "on schedule" despite the CAN+MCU lag.  This keeps the MPC's
+    # internal plant model simple (first-order servo lag, 18 states) and
+    # matches the known-good standalone/SITL/PIL=100/100 baseline.
+    N_DELAY_BUFFERS = 0          # 0 = no delay augmentation in MPC (use lookahead_stage on application side)
+    TAU_TRANSPORT_S = 0.0        # unused when N_DELAY_BUFFERS=0
+    DELAY_MODEL     = 'pade'      # unused when N_DELAY_BUFFERS=0
 
     model = create_m130_model(
         launch_alt_val=launch_alt_val, tau_servo_val=tau_servo_val,
         tau_transport_val=TAU_TRANSPORT_S,
         n_delay_buffers=N_DELAY_BUFFERS,
+        delay_model=DELAY_MODEL,
         mass_full_val=mass_full_val, mass_dry_val=mass_dry_val,
         Ixx_full_val=Ixx_full_val, Ixx_dry_val=Ixx_dry_val,
         Iyy_full_val=Iyy_full_val, Iyy_dry_val=Iyy_dry_val,

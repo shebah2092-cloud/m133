@@ -107,7 +107,7 @@ public:
 
 private:
 	void _compute_weights(float t_flight, float gamma, float gamma_ref_prev,
-			      float phi, float p_rate,
+			      float phi,
 			      float alpha, float q_rate, float x_pos,
 			      bool cruise_alt_set, float h_ref_scaled,
 			      double W[MPC_NY], double W_e[MPC_NYN]);
