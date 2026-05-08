@@ -71,20 +71,15 @@ class MheEstimator:
             json_file="m130_mhe_ocp.json",
         )
 
-        # Pre-compute per-stage weight matrices for GPS freshness gating.
+        # Pre-compute per-stage weight matrices for sensor freshness gating.
         # W = block_diag(R, Q) [30×30];  W_0 = block_diag(R, Q, P0) [47×47]
         # GPS occupies y[7..12] → R rows/cols 7..12 → W rows/cols 7..12.
-        # When GPS is stale (repeated sample), zero those entries so the
-        # solver ignores the duplicated GPS data and relies on IMU + baro
+        # Baro occupies y[6] → R row/col 6 → W row/col 6.
+        # When a sensor is stale (repeated sample), zero those entries so the
+        # solver ignores the duplicated data and relies on other sensors
         # + dynamics alone for that stage.
-        self._W_fresh = np.array(self._solver.acados_ocp.cost.W)      # 30×30
-        self._W_stale = self._W_fresh.copy()
-        self._W_stale[7:13, :] = 0.0
-        self._W_stale[:, 7:13] = 0.0
-        self._W0_fresh = np.array(self._solver.acados_ocp.cost.W_0)   # 47×47
-        self._W0_stale = self._W0_fresh.copy()
-        self._W0_stale[7:13, :] = 0.0
-        self._W0_stale[:, 7:13] = 0.0
+        self._W_full = np.array(self._solver.acados_ocp.cost.W)       # 30×30
+        self._W0_full = np.array(self._solver.acados_ocp.cost.W_0)    # 47×47
 
         # Sliding window buffers
         self._meas_buf = []    # list of (t, y_meas[13], gps_fresh)
@@ -130,7 +125,8 @@ class MheEstimator:
         for k in range(self._N):
             self._solver.set(k, "u", np.zeros(NW_MHE))
 
-    def push_measurement(self, t: float, y_meas: np.ndarray, gps_fresh: bool = True):
+    def push_measurement(self, t: float, y_meas: np.ndarray,
+                         gps_fresh: bool = True, baro_fresh: bool = True):
         """Add a sensor measurement vector [13] to the sliding window.
 
         Args:
@@ -138,8 +134,11 @@ class MheEstimator:
             y_meas: measurement vector [13]
             gps_fresh: True if GPS was updated this cycle (new sample),
                        False if y[7..12] are a repeat of the previous sample.
+            baro_fresh: True if barometer was updated this cycle,
+                        False if y[6] is a repeat of the previous sample.
         """
-        self._meas_buf.append((t, np.asarray(y_meas, dtype=float).ravel(), gps_fresh))
+        self._meas_buf.append((t, np.asarray(y_meas, dtype=float).ravel(),
+                               gps_fresh, baro_fresh))
 
     def push_control_and_params(self, t: float, u_fins: np.ndarray,
                                 params: np.ndarray):
@@ -188,11 +187,13 @@ class MheEstimator:
         # Stage 0: arrival cost + measurement + process noise
         y0 = meas_window[0][1]
         gps_fresh_0 = meas_window[0][2] if len(meas_window[0]) > 2 else True
+        baro_fresh_0 = meas_window[0][3] if len(meas_window[0]) > 3 else True
         x_bar = self._x_bar if self._x_bar is not None else np.zeros(NX_MHE)
         yref_0 = np.concatenate([y0, np.zeros(NW_MHE), x_bar])
         self._solver.set(0, "yref", yref_0)
-        # GPS freshness gating: use W_stale when GPS hasn't been updated
-        self._solver.cost_set(0, "W", self._W0_fresh if gps_fresh_0 else self._W0_stale)
+        # Sensor freshness gating: zero weight rows/cols for stale sensors
+        W0_k = self._build_weight_matrix(self._W0_full, gps_fresh_0, baro_fresh_0)
+        self._solver.cost_set(0, "W", W0_k)
 
         # Stages 1..N-1: measurement + noise.  Fill ALL intermediate stages
         # so the NLP cost is well-defined during startup when the window is
@@ -204,13 +205,16 @@ class MheEstimator:
             if k < len(meas_window):
                 yk = meas_window[k][1]
                 gps_fresh_k = meas_window[k][2] if len(meas_window[k]) > 2 else True
+                baro_fresh_k = meas_window[k][3] if len(meas_window[k]) > 3 else True
             else:
                 yk = y_last
                 gps_fresh_k = False  # repeated → stale
+                baro_fresh_k = False
             yref_k = np.concatenate([yk, np.zeros(NW_MHE)])
             self._solver.set(k, "yref", yref_k)
-            # GPS freshness gating
-            self._solver.cost_set(k, "W", self._W_fresh if gps_fresh_k else self._W_stale)
+            # Sensor freshness gating
+            W_k = self._build_weight_matrix(self._W_full, gps_fresh_k, baro_fresh_k)
+            self._solver.cost_set(k, "W", W_k)
 
         # Parameters for every interval 0..N-1 plus the terminal node.
         # Same fallback as the measurement loop: after n_use samples, freeze
@@ -254,7 +258,7 @@ class MheEstimator:
         if N_use >= 2:
             self._x_bar = self._solver.get(1, "x").copy()
 
-        # Quality metric: based on solver status and process noise magnitude
+        # Quality metric: solver status + process noise + measurement residuals
         w_norm = 0.0
         for k in range(min(N_use, self._N)):
             wk = self._solver.get(k, "u")
@@ -266,6 +270,17 @@ class MheEstimator:
             quality *= 0.5
         if w_norm > 5.0:
             quality *= max(0.1, 1.0 - (w_norm - 5.0) / 15.0)
+
+        # Measurement residual check: large solver residuals indicate systematic
+        # model bias that process noise alone can't absorb.
+        if n_use >= 2:
+            residuals = self._solver.get_residuals()
+            if residuals is not None and len(residuals) >= 4:
+                # acados residuals[1] = stationarity, residuals[3] = complementarity
+                stat_res = float(residuals[1])
+                if stat_res > 1.0:
+                    res_penalty = max(0.3, 1.0 - (stat_res - 1.0) / 10.0)
+                    quality *= res_penalty
 
         # Bound saturation check: if wind or gyro bias estimates are near
         # their box constraint limits (>90%), it signals model mismatch —
@@ -303,6 +318,26 @@ class MheEstimator:
         )
         self._last_valid = output
         return output
+
+    def _build_weight_matrix(self, W_base: np.ndarray,
+                             gps_fresh: bool, baro_fresh: bool) -> np.ndarray:
+        """Build per-stage weight matrix with stale-sensor rows/cols zeroed.
+
+        GPS occupies measurement indices 7..12, baro occupies index 6.
+        When a sensor hasn't updated since the last solve, its repeated
+        measurement carries no new information — zeroing the corresponding
+        weight entries prevents the solver from double-counting stale data.
+        """
+        if gps_fresh and baro_fresh:
+            return W_base
+        W = W_base.copy()
+        if not gps_fresh:
+            W[7:13, :] = 0.0
+            W[:, 7:13] = 0.0
+        if not baro_fresh:
+            W[6, :] = 0.0
+            W[:, 6] = 0.0
+        return W
 
     def get_last_estimate(self) -> MheOutput:
         """Return the last valid estimate."""

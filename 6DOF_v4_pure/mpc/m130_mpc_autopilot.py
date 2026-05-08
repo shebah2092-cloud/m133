@@ -417,7 +417,11 @@ class MpcController:
             sg, cg = math.sin(gam), math.cos(gam)
             al = x[6]
 
-            V_dot = (thrust * math.cos(al) - 0.5 * 1.225 * V_k**2 * 0.0133 * 0.30
+            # Use actual reference area (Qabthah1) and a representative CD
+            # instead of hardcoded approximations for better warm-start quality.
+            _S_REF = 0.01327  # m² (matches m130_acados_model.py)
+            _CD_APPROX = 0.35  # representative subsonic CD from CFD fit
+            V_dot = (thrust * math.cos(al) - 0.5 * 1.225 * V_k**2 * _S_REF * _CD_APPROX
                      - mass * _G * sg) / mass
             gam_dot = -_G * cg / V_k + thrust * math.sin(al) / (mass * V_k)
 
@@ -781,10 +785,17 @@ class MpcController:
 
         if not ok or not valid:
             self._consec_fails += 1
-            # Hold last good commands (don't decay — maintains terminal guidance)
             de = self._last_delta_e
             dr = self._last_delta_r
             da = self._last_delta_a
+            # Graduated recovery: decay held commands toward neutral after
+            # sustained failures to prevent stale commands from amplifying
+            # divergence during transient disturbances.
+            if self._consec_fails >= 5:
+                decay = 0.85 ** (self._consec_fails - 4)
+                de *= decay
+                dr *= decay
+                da *= decay
             if self._consec_fails >= 10:
                 self._reinit(x_mpc)
         else:
