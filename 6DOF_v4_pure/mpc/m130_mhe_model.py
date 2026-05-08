@@ -16,7 +16,8 @@ import casadi as ca
 from acados_template import AcadosModel
 
 
-def create_m130_mhe_model() -> AcadosModel:
+def create_m130_mhe_model(mass_full_val=12.74, mass_dry_val=11.11,
+                          xbc_max_val=0.0) -> AcadosModel:
     model = AcadosModel()
     model.name = "m130_mhe"
 
@@ -204,6 +205,18 @@ def create_m130_mhe_model() -> AcadosModel:
     Cm_total_yaw = (Cm_yaw + Cmd_yaw
                     + Cnr_coeff * (r_rate * d_ref / (2.0 * V_safe)))
     M_yaw = q_dyn * S_ref * d_ref * Cm_total_yaw
+
+    # CG offset correction — matches MPC model (m130_acados_model.py:296-301).
+    # As propellant burns, CG shifts forward; the resulting moment arm between
+    # the aerodynamic center and the new CG creates additional pitch/yaw torques.
+    # Omitting this in MHE causes a model mismatch that biases state estimates.
+    _dm = max(float(mass_full_val) - float(mass_dry_val), 1e-6)
+    burn_frac = ca.fmin(ca.fmax((float(mass_full_val) - mass) / _dm, 0.0), 1.0)
+    xbc = burn_frac * float(xbc_max_val)
+    F_normal_total = q_dyn * S_ref * (Cn_pitch + Cnd_pitch)
+    F_side_total   = -q_dyn * S_ref * (Cn_yaw + Cnd_yaw)
+    M_pitch = M_pitch + xbc * F_normal_total
+    M_yaw   = M_yaw   - xbc * F_side_total
 
     Cl_total = (Clp_coeff * (p_rate * d_ref / (2.0 * V_safe))
                 + Cl_delta_a * delta_a_act)
