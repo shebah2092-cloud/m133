@@ -10427,7 +10427,7 @@ Acceptance: GCI₁₂ &lt; 5% (typical)، 1% (conservative)
 <!-- ╚══════════════════════════════════════════════════════════════╝ -->
 <div class="phase-header" style="background:linear-gradient(135deg,#1a5276,#2980b9)">
 <h2>المرحلة س: نظام التحكم المتقدم — MPC + MHE + GNC متكامل <span class="new-badge" style="background:#fff;color:#1a5276">v9</span></h2>
-<p>الخطوات 73–79 — من حلقة PID البسيطة إلى طيار آلي تنبؤي متكامل مع تقدير حالة بأفق متحرك</p>
+<p>الخطوات 73–86 — من حلقة PID البسيطة إلى طيار آلي تنبؤي متكامل مع تقدير حالة بأفق متحرك — مُوسَّعة من مستودع M133</p>
 </div>
 
 <div class="note" style="border-right-color:#2980b9">
@@ -11002,21 +11002,732 @@ x̂_final = (1 - blend) × x̂_ekf + blend × x̂_mhe
 <div class="calc-row"><span class="calc-label">نسبة النجاح</span><span class="calc-input"><span class="fill">___</span> %</span></div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>الخطوة 80: النموذج الرمزي CasADi ومعادلات الحركة 6-DOF <span class="new-badge" style="background:#2980b9">MODEL</span></h2>
+<div class="step-box" style="border-color:#2980b9">
+<div class="step-title"><span class="step-num" style="background:#2980b9">80</span> بناء النموذج الرمزي في CasADi لمحلول acados — معادلات الحركة الكاملة</div>
+
+<div class="note" style="border-right-color:#2980b9">
+<strong>لماذا CasADi؟</strong> acados يحتاج مشتقات (Jacobians) لمعادلات الحركة لحل مسألة OCP. بدلاً من حسابها يدوياً (18×18 مصفوفة!)، نعرّف المعادلات رمزياً في CasADi → التفاضل التلقائي (AD) يولّد المشتقات بدقة الآلة. الملف المرجعي: <code>m130_acados_model.py</code>.
+</div>
+
+<h3>أ. تعريف المتغيرات الرمزية</h3>
+<div class="eq">في CasADi، كل متغير حالة يُعرَّف كرمز:
+
+  V      = SX.sym('V')          # السرعة الكلية
+  gamma  = SX.sym('gamma')      # زاوية مسار الطيران
+  chi    = SX.sym('chi')        # زاوية المسار الأفقي
+  ...
+  x = vertcat(V, γ, χ, p, q, r, α, β, φ, h̃, x̃, ỹ, δe_s, δr_s, δa_s, δe_act, δr_act, δa_act)
+
+متجه التحكم (معدلات — وليس مواضع):
+  u = vertcat(δ̇e, δ̇r, δ̇a)     # rad/s
+
+التحكم بالمعدلات يُمكّن acados من فرض:
+  • قيود على المواضع: |δ_i| ≤ 20°
+  • قيود على المعدلات: |δ̇_i| ≤ 250°/s
+  معاً — وهذا مستحيل مع التحكم بالمواضع المباشر.</div>
+
+<h3>ب. المعاملات المتغيرة مقابل الثوابت المدمجة</h3>
+<div class="eq">المعاملات التي تتغير أثناء الطيران تُمرَّر كمتجه p:
+  p = [mass, thrust]    ← يتغيران مع احتراق الوقود
+
+الثوابت تُدمج عند بناء النموذج (compile-time):
+  launch_alt, τ_servo, Ixx_full/dry, Iyy_full/dry, Izz_full/dry,
+  mass_full, mass_dry, xbc_max
+
+استيفاء القصور الذاتي من نسبة الاحتراق:
+  burn_frac = clamp((m_full - m) / (m_full - m_dry), 0, 1)
+  Ixx = Ixx_full + burn_frac × (Ixx_dry - Ixx_full)
+  Iyy = Iyy_full + burn_frac × (Iyy_dry - Iyy_full)
+  Izz = Izz_full + burn_frac × (Izz_dry - Izz_full)
+  xbc = burn_frac × xbc_max</div>
+
+<table class="sym-table">
+<tr><th>المعامل</th><th>النوع</th><th>القيمة (Qabthah1)</th><th>الشرح</th></tr>
+<tr><td>m_full</td><td>ثابت مدمج</td><td>12.74 kg</td><td>كتلة ممتلئة</td></tr>
+<tr><td>m_dry</td><td>ثابت مدمج</td><td>11.11 kg</td><td>كتلة جافة</td></tr>
+<tr><td>Ixx_full / dry</td><td>ثابت مدمج</td><td>0.0389 / 0.0356</td><td>قصور ذاتي لف (kg·m²)</td></tr>
+<tr><td>Iyy_full / dry</td><td>ثابت مدمج</td><td>1.1651 / 1.0789</td><td>قصور ذاتي ميلان</td></tr>
+<tr><td>Izz_full / dry</td><td>ثابت مدمج</td><td>1.166 / 1.0779</td><td>قصور ذاتي انعراج</td></tr>
+<tr><td>τ_servo</td><td>ثابت مدمج</td><td>0.025 s</td><td>ثابت زمني سيرفو</td></tr>
+<tr><td>S_ref</td><td>ثابت مدمج</td><td>0.01327 m²</td><td>مساحة مرجعية</td></tr>
+<tr><td>d_ref</td><td>ثابت مدمج</td><td>0.130 m</td><td>قطر مرجعي</td></tr>
+</table>
+
+<h3>ج. نموذج الغلاف الجوي ISA الرمزي</h3>
+<div class="eq">الكثافة والماخ يُحسبان رمزياً — acados يرى ∂ρ/∂h و ∂Mach/∂(V,h) في Jacobians:
+
+  altitude_asl = h̃ × 100 + launch_alt        (الارتفاع فوق سطح البحر)
+  T = max(288.15 - 0.0065 × altitude_asl, 216.65)    (حرارة ISA)
+  ρ = 1.225 × (T / 288.15)^4.2559            (كثافة ISA)
+  a = √(1.4 × 287.05 × T)                    (سرعة الصوت)
+  Mach = clamp(V / a, 0.1, 1.0)              (نطاق CFD)
+
+تلاشي الديناميكا الهوائية عند السرعات المنخفضة:
+  aero_fade = 0.5 × (1 + tanh((V - 7.5) / 1.5))
+  q_dyn = 0.5 × ρ × V² × aero_fade
+
+  → aero_fade ≈ 0 عند V &lt; 5 m/s (على القضيب)
+  → aero_fade ≈ 1 عند V &gt; 10 m/s (طيران حر)
+  → الانتقال ناعم وقابل للاشتقاق (مطلوب لـ AD)</div>
+
+<h3>د. معادلات الحركة الكاملة (6-DOF في إحداثيات الرياح)</h3>
+<div class="eq">المعادلات العشر الأساسية لديناميكا الصاروخ:
+
+<strong>1) معادلة السرعة:</strong>
+  V̇ = (T·cos α·cos β − D − m·g·sin γ) / m
+
+<strong>2) معادلة مسار الطيران العمودي:</strong>
+  γ̇ = [T·(sin α·cos φ + cos α·sin β·sin φ) + L_pitch·cos φ − L_yaw·sin φ] / (m·V)
+      − g·cos γ / V
+
+<strong>3) معادلة المسار الأفقي:</strong>
+  χ̇ = [T·(sin α·sin φ − cos α·sin β·cos φ) + L_pitch·sin φ + L_yaw·cos φ]
+      / (m·V·cos γ)
+
+<strong>4-6) معادلات أويلر للدوران:</strong>
+  ṗ = M_roll / Ixx
+  q̇ = M_pitch / Iyy
+  ṙ = M_yaw / Izz
+
+<strong>7) معادلة زاوية الهجوم:</strong>
+  α̇ = q − γ̇·cos φ − χ̇·cos γ·sin φ
+
+<strong>8) معادلة الانزلاق الجانبي:</strong>
+  β̇ = −r − γ̇·sin φ + χ̇·cos γ·cos φ
+
+<strong>9) معادلة اللف:</strong>
+  φ̇ = p + (q·sin φ + r·cos φ)·tan γ
+
+<strong>10-12) معادلات الموقع (مُطبَّعة):</strong>
+  ḣ̃ = V·sin γ / 100
+  ẋ̃ = V·cos γ·cos χ / 1000
+  ẏ̃ = V·cos γ·sin χ / 1000
+
+<strong>13-15) معدلات أوامر الزعانف:</strong>
+  δ̇e_s = δ̇e    (أمر التحكم مباشرة)
+  δ̇r_s = δ̇r
+  δ̇a_s = δ̇a
+
+<strong>16-18) ديناميكا المشغل (تأخير الدرجة الأولى):</strong>
+  δ̇e_act = (δe_s − δe_act) / τ_servo
+  δ̇r_act = (δr_s − δr_act) / τ_servo
+  δ̇a_act = (δa_s − δa_act) / τ_servo</div>
+
+<div class="warn">
+<strong>ملاحظة حاسمة — القوى الإيروديناميكية تُحسب من الأوضاع الفعلية:</strong> L_pitch, L_yaw, D, M_pitch, M_yaw, M_roll كلها تعتمد على δ_act (الأوضاع الفعلية بعد تأخير السيرفو) وليس δ_s (الأوامر المُرسَلة). هذا يُمكّن MPC من "رؤية" تأخير السيرفو والتخطيط وفقاً لذلك — وهو ما يميز هذا النموذج عن التصاميم التقليدية.
+</div>
+
+<h3>هـ. الصيغة الصريحة والضمنية</h3>
+<div class="eq">acados يحتاج صيغتين:
+
+  الصريحة: ẋ = f(x, u, p)              ← لـ ERK (Explicit Runge-Kutta)
+  الضمنية: 0 = ẋ − f(x, u, p)          ← لـ IRK (Implicit Runge-Kutta)
+
+  model.f_expl_expr = f_expl             # المعادلات أعلاه
+  model.f_impl_expr = xdot - f_expl      # الصيغة الضمنية
+
+M130 يستخدم ERK4 (4 مراحل، خطوتان فرعيتان لكل مرحلة OCP):
+  dt_substep = dt / (stages × steps) = 20ms / (4×2) = 2.5 ms
+  → كافٍ لالتقاط ديناميكا السيرفو (τ = 25 ms)
+  → يفشل إذا أُضيف Padé(2,2) مع كسب عالٍ (12/D ≈ 109)</div>
+
+<div class="calc-row"><span class="calc-label">عدد حالات النموذج</span><span class="calc-input">nx = <span class="fill">18</span></span></div>
+<div class="calc-row"><span class="calc-label">عدد أوامر التحكم</span><span class="calc-input">nu = <span class="fill">3</span></span></div>
+<div class="calc-row"><span class="calc-label">عدد المعاملات المتغيرة</span><span class="calc-input">np = <span class="fill">2</span></span></div>
+<div class="calc-row"><span class="calc-label">زمن الخطوة الفرعية ERK4</span><span class="calc-input">dt_sub = <span class="fill">2.5</span> ms</span></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>الخطوة 81: المعاملات الإيروديناميكية متعددة الحدود <span class="new-badge" style="background:#2980b9">AERO</span></h2>
+<div class="step-box" style="border-color:#2980b9">
+<div class="step-title"><span class="step-num" style="background:#2980b9">81</span> معاملات CFD بمتعددات حدود من الدرجة 7 مع اعتماد ماخ مكعّب</div>
+
+<div class="note" style="border-right-color:#2980b9">
+<strong>المصدر:</strong> بيانات CFD لصاروخ Qabthah1 — مجهزة كمتعددات حدود فردية (الدرجة 7) لتكون قابلة للاشتقاق في CasADi. المعاملات مأخوذة من ملفات: <code>aero_coeffs.csv</code>, <code>fin_deflection_coeffs.csv</code>, <code>damping_coeffs.csv</code>, <code>roll_aero_coeffs.csv</code>.
+</div>
+
+<h3>أ. البنية العامة للمعاملات</h3>
+<div class="eq">كل معامل إيروديناميكي يُمثَّل بمتعددة حدود ثنائية المتغير:
+
+<strong>للمعاملات الفردية (Cn, Cm, Cmd, Cnd):</strong>
+  C(x, M) = a₁(M)·x + a₃(M)·x³ + a₅(M)·x⁵ + a₇(M)·x⁷
+
+<strong>للمعاملات الزوجية (Cmq, Clp, CD):</strong>
+  C(x, M) = c₀(M) + c₂(M)·x² + c₄(M)·x⁴
+
+<strong>اعتماد ماخ (مكعّب):</strong>
+  aᵢ(M) = k₀ + k₁·M + k₂·M² + k₃·M³
+
+حيث x = α أو β أو δ_e أو δ_r (حسب المعامل)
+نطاق الماخ الصالح: 0.1 ≤ M ≤ 1.0 (مُقيَّد)</div>
+
+<h3>ب. معاملات القوة العمودية Cn(α, M)</h3>
+<div class="eq">Cn_pitch = Cn_a1·α + Cn_a3·α³ + Cn_a5·α⁵ + Cn_a7·α⁷
+
+حيث المعاملات تعتمد على ماخ:
+  Cn_a1 = 12.622 + 11.212·M − 28.837·M² + 26.861·M³
+  Cn_a3 = 14.340 − 101.528·M + 141.619·M² − 53.998·M³
+  Cn_a5 = −318.447 + 724.919·M − 1960.253·M² + 1733.204·M³
+  Cn_a7 = 718.685 − 17.524·M + 6525.256·M² − 8177.947·M³</div>
+
+<h3>ج. معاملات العزم Cm(α, M) وعزم التحكم Cmd(δ, M)</h3>
+<div class="eq"><strong>عزم الميلان الإيروديناميكي:</strong>
+  Cm_pitch = Cm_a1·α + Cm_a3·α³ + Cm_a5·α⁵ + Cm_a7·α⁷
+  Cm_a1 = −9.239 − 5.974·M + 15.860·M² − 21.574·M³
+
+<strong>عزم تحكم الزعنفة:</strong>
+  Cmd_pitch = Cmd_d1·δe + Cmd_d3·δe³ + Cmd_d5·δe⁵ + Cmd_d7·δe⁷
+  Cmd_d1 = −11.751 − 39.695·M + 106.212·M² − 95.130·M³
+
+<strong>قوة تحكم الزعنفة:</strong>
+  Cnd_pitch = Cnd_d1·δe + Cnd_d3·δe³ + Cnd_d5·δe⁵ + Cnd_d7·δe⁷
+  Cnd_d1 = 3.230 + 10.992·M − 29.370·M² + 26.266·M³</div>
+
+<h3>د. معاملات التخميد Cmq و السحب CD</h3>
+<div class="eq"><strong>تخميد الميلان (زوجي، الدرجة 4):</strong>
+  Cmq = (Cmq_c0 + Cmq_c2·α² + Cmq_c4·α⁴) × 57.2958
+  Cmq_c0 = −2.192 − 2.206·M + 7.535·M² − 8.892·M³
+
+  المعامل 57.2958 = 180°/π — تحويل من per_degree إلى per_radian
+
+<strong>معامل السحب (زوجي، ماخ الدرجة 7):</strong>
+  CD = CD_c0(M) + CD_c2(M)·α_total² + CD_c4(M)·α_total⁴
+  α_total² = α² + β²    (مجموع مربعات زوايا الهجوم والانزلاق)
+  CD_c0 = 0.645 − 6.677·M + 56.985·M² − 252.484·M³ + 615.617·M⁴
+          − 834.591·M⁵ + 587.347·M⁶ − 165.627·M⁷</div>
+
+<h3>هـ. استغلال التماثل المحوري</h3>
+<div class="eq">الصاروخ متماثل محورياً — نفس معاملات CFD لمستوى الميلان والانعراج:
+
+  <strong>الميلان (pitch):</strong>  Cn(α), Cm(α), Cnd(δe), Cmd(δe), Cmq(α)
+  <strong>الانعراج (yaw):</strong>   Cn(β), −Cm(β), Cnd(δr), Cmd(δr), Cnr(β)≈Cmq(β)
+
+  ← العلامة السالبة في عزم الانعراج Cm_yaw = −Cm(β) تضمن عزم استعادة
+     (restoring moment) صحيح مع اتفاقية إطار الجسم.
+
+  <strong>اللف (roll):</strong>
+  Cl_total = Clp·(p·d_ref)/(2V) + Cl_δa·δa_act
+  Clp_c0 = −0.299 + 0.167·M − 0.627·M² + 0.391·M³
+  Cl_δa = −1.853 − 4.339·M + 12.373·M² − 12.716·M³</div>
+
+<h3>و. القوى والعزوم النهائية</h3>
+<div class="eq">تجميع القوى والعزوم الإيروديناميكية:
+
+  L_pitch = q_dyn × S_ref × (Cn_pitch + Cnd_pitch)     قوة عمودية (ميلان)
+  L_yaw   = −q_dyn × S_ref × (Cn_yaw + Cnd_yaw)       قوة جانبية (انعراج)
+  D       = q_dyn × S_ref × CD                          قوة سحب
+
+  M_pitch = q_dyn × S_ref × d_ref × [Cm_pitch + Cmd_pitch + Cmq·(q·d_ref)/(2V)]
+  M_yaw   = q_dyn × S_ref × d_ref × [Cm_yaw + Cmd_yaw + Cnr·(r·d_ref)/(2V)]
+  M_roll  = q_dyn × S_ref × d_ref × [Clp·(p·d_ref)/(2V) + Cl_δa·δa_act]
+
+  + تصحيح إزاحة CG:
+  M_pitch += xbc × F_normal_total
+  M_yaw   −= xbc × F_side_total</div>
+
+<div class="calc-row"><span class="calc-label">مساحة مرجعية</span><span class="calc-input">S_ref = <span class="fill">0.01327</span> m²</span></div>
+<div class="calc-row"><span class="calc-label">قطر مرجعي</span><span class="calc-input">d_ref = <span class="fill">0.130</span> m</span></div>
+<div class="calc-row"><span class="calc-label">درجة متعددة الحدود</span><span class="calc-input">n = <span class="fill">7</span> (فردية)</span></div>
+<div class="calc-row"><span class="calc-label">درجة اعتماد ماخ</span><span class="calc-input">n_M = <span class="fill">3</span> (مكعّب)</span></div>
+<div class="calc-row"><span class="calc-label">نطاق ماخ الصالح</span><span class="calc-input">[<span class="fill">0.1</span>, <span class="fill">1.0</span>]</span></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>الخطوة 82: صياغة مسألة التحكم الأمثل OCP — التكلفة والقيود <span class="new-badge" style="background:#2980b9">OCP</span></h2>
+<div class="step-box" style="border-color:#2980b9">
+<div class="step-title"><span class="step-num" style="background:#2980b9">82</span> صياغة OCP المفصّلة: مصفوفات التكلفة، القيود المرنة/الصلبة، القيود متعددة السطوح</div>
+
+<h3>أ. نوع التكلفة: LINEAR_LS</h3>
+<div class="eq">دالة التكلفة من النوع المربعات الصغرى الخطية:
+
+  J = Σᵢ₌₀ᴺ⁻¹ ‖Vx·xₖ + Vu·uₖ − yref‖²_W + ‖Vx_e·x_N − yref_e‖²_W_e
+
+المتتبعات (12 مخرج = 9 حالات + 3 معدلات تحكم):
+  y = [h̃, γ, χ, p, q, r, α, β, φ, δ̇e, δ̇r, δ̇a]
+
+مصفوفة التحديد Vx [12×18]: تربط الحالات بالمتتبعات
+  Vx[0,9]=1 (h̃), Vx[1,1]=1 (γ), Vx[2,2]=1 (χ),
+  Vx[3,3]=1 (p), Vx[4,4]=1 (q), Vx[5,5]=1 (r),
+  Vx[6,6]=1 (α), Vx[7,7]=1 (β), Vx[8,8]=1 (φ)
+
+مصفوفة التحكم Vu [12×3]:
+  Vu[9,0]=1 (δ̇e), Vu[10,1]=1 (δ̇r), Vu[11,2]=1 (δ̇a)
+
+التكلفة النهائية: 9 حالات فقط (بدون معدلات تحكم)</div>
+
+<h3>ب. القيود الصلبة على التحكم</h3>
+<div class="eq">حدود معدلات تغيّر الزعانف (صلبة — لا تُخرَق أبداً):
+  |δ̇e| ≤ 250°/s = 4.363 rad/s
+  |δ̇r| ≤ 250°/s
+  |δ̇a| ≤ 250°/s</div>
+
+<h3>ج. القيود المرنة على الحالات</h3>
+<div class="eq">القيود المرنة (soft constraints) — تُعاقَب في التكلفة بدلاً من رفض الحل:
+
+المؤشر   الحالة      الحد         الصلابة
+  3       p_rate     ±60°/s       مرنة
+  4       q_rate     ±80°/s       مرنة
+  5       r_rate     ±60°/s       مرنة
+  6       α          ±15°         مرنة (نطاق CFD ±20°)
+  7       β          ±10°         مرنة
+  8       φ          ±30°         مرنة
+  9       h̃          ≥ h_min      مرنة (لا تلمس الأرض)
+  12-14   δ_s        ±20°         صلبة
+  15-17   δ_act      ±20°         صلبة
+
+معاملات عقوبة القيود المرنة (Zl/Zu = خطي، zl/zu = تربيعي):
+  α, β: Zl=Zu=9000, zl=zu=900     ← أشد عقوبة (ضمان نطاق CFD)
+  φ:    Zl=Zu=8000, zl=zu=800
+  h:    Zl=Zu=5000, zl=zu=500     ← حماية من الاصطدام بالأرض
+  p,q,r: Zl=Zu=1000-5000</div>
+
+<div class="note" style="border-right-color:#2980b9">
+<strong>لماذا مرنة وليست صلبة؟</strong> القيود الصلبة على α, β, φ تجعل مسألة QP غير ممكنة (infeasible) عند الاضطرابات الكبيرة — المحلول يتوقف. القيود المرنة تسمح بتجاوز مؤقت مع عقوبة كبيرة — المحلول يستمر ويعيد النظام إلى الحدود بسلاسة. لكن حدود الزعانف (±20°) تبقى صلبة لأنها قيود فيزيائية مطلقة.
+</div>
+
+<h3>د. القيود متعددة السطوح — خلط الزعانف (Polytopic)</h3>
+<div class="eq">القيد الحرج: بعد خلط X-config، كل زعنفة يجب أن تبقى ضمن ±20°.
+لا يكفي تقييد δe, δr, δa كل على حدة!
+
+  fin₁ = −δe_act − δr_act + δa_act
+  fin₂ = −δe_act + δr_act + δa_act
+  fin₃ = +δe_act + δr_act + δa_act
+  fin₄ = +δe_act − δr_act + δa_act
+
+مصفوفة القيود C_poly [4×18] (على الأوضاع الفعلية فقط):
+  |fin_i| ≤ δ_max = 20°    لكل i ∈ {1,2,3,4}
+
+ملاحظة تصميمية: القيد polytopic يُطبَّق فقط على δ_act (الفعلية) وليس δ_s (المأمورة).
+السبب: تأخير السيرفو (τ=25ms) يمتص التجاوز المؤقت في الأوامر — 
+المحلول يستغل هذه الحرية لتتبع أسرع عند الحاجة.</div>
+
+<h3>هـ. إعدادات المحلول</h3>
+<table class="sym-table">
+<tr><th>الإعداد</th><th>القيمة</th><th>الشرح</th></tr>
+<tr><td>nlp_solver_type</td><td>SQP_RTI</td><td>حل تقريبي سريع — تكرار واحد لكل دورة تحكم</td></tr>
+<tr><td>qp_solver</td><td>PARTIAL_CONDENSING_HPIPM</td><td>تكثيف جزئي N=200 → QP=10 مراحل</td></tr>
+<tr><td>qp_solver_cond_N</td><td>10</td><td>حرج لأداء ARM64 في الزمن الحقيقي</td></tr>
+<tr><td>qp_solver_iter_max</td><td>100</td><td>أقصى تكرارات QP الداخلي</td></tr>
+<tr><td>hessian_approx</td><td>GAUSS_NEWTON</td><td>تقريب Gauss-Newton لمصفوفة هيسيان</td></tr>
+<tr><td>integrator_type</td><td>ERK</td><td>Explicit Runge-Kutta (الدرجة 4)</td></tr>
+<tr><td>sim_method_num_stages</td><td>4</td><td>عدد مراحل ERK</td></tr>
+<tr><td>sim_method_num_steps</td><td>2</td><td>عدد خطوات فرعية لكل مرحلة OCP</td></tr>
+<tr><td>levenberg_marquardt</td><td>2×10⁻²</td><td>تنظيم LM — يخمّد التذبذب في الميلان</td></tr>
+</table>
+
+<div class="calc-row"><span class="calc-label">عدد مراحل OCP</span><span class="calc-input">N = <span class="fill">200</span></span></div>
+<div class="calc-row"><span class="calc-label">أفق التنبؤ</span><span class="calc-input">t_f = <span class="fill">4.0</span> s</span></div>
+<div class="calc-row"><span class="calc-label">خطوة زمنية OCP</span><span class="calc-input">dt = t_f/N = <span class="fill">20</span> ms</span></div>
+<div class="calc-row"><span class="calc-label">مراحل QP المكثّفة</span><span class="calc-input">cond_N = <span class="fill">10</span></span></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>الخطوة 83: جدولة الأوزان التكيفية ومراحل الطيران <span class="new-badge" style="background:#2980b9">SCHED</span></h2>
+<div class="step-box" style="border-color:#2980b9">
+<div class="step-title"><span class="step-num" style="background:#2980b9">83</span> جدولة أوزان MPC عبر 4 مراحل طيران مع انتقالات هيرمايت ناعمة</div>
+
+<div class="note" style="border-right-color:#2980b9">
+<strong>المبدأ:</strong> MPC بأوزان ثابتة يعمل بشكل مقبول، لكن أوزان تتكيف مع مرحلة الطيران تحقق أداءً أفضل بكثير. خلال الدفع، الأولوية لتتبع γ. بعد انتهاء الدفع، الأولوية للتخميد. خلال الانغماس، الأولوية لتتبع الهدف. الملف المرجعي: <code>m130_mpc_autopilot.py</code> دالة <code>control_function()</code>.
+</div>
+
+<h3>أ. مراحل الطيران الأربع</h3>
+<table class="sym-table">
+<tr><th>المرحلة</th><th>الزمن</th><th>γ_ref</th><th>أولوية التحكم</th><th>سلوك الأوزان</th></tr>
+<tr><td><strong>1. الدفع (Boost)</strong></td><td>0 → t_burn−1s</td><td>γ_natural ≈ atan2(T·sinθ−mg, T·cosθ)</td><td>تتبع γ + تخميد ميلان</td><td>γ_w=250, q_w=200, α_w=120</td></tr>
+<tr><td><strong>2. الانقطاع (Tailoff)</strong></td><td>t_burn−1s → t_burn+2s</td><td>γ_natural → 0 (Hermite)</td><td>تخميد شديد حول الانقطاع</td><td>q_w→1000, α_w→920</td></tr>
+<tr><td><strong>3. الإبحار (Coast)</strong></td><td>t_burn+2s → 65% مدى</td><td>0° (أفقي) + تثبيت ارتفاع</td><td>تثبيت ارتفاع + استقرار</td><td>h_w=15-50, γ_w=100</td></tr>
+<tr><td><strong>4. الغوص (Terminal)</strong></td><td>65%→100% مدى</td><td>γ_LOS → γ_impact (Hermite)</td><td>تتبع LOS + زاوية اصطدام</td><td>γ_w=500, φ_w=600</td></tr>
+</table>
+
+<h3>ب. دالة الانتقال بين الدفع والإبحار</h3>
+<div class="eq">الانتقال من مرحلة الدفع إلى الإبحار يتم بدالة tanh ناعمة:
+
+  t_rel = t − (t_burn − 0.5)
+  s_burn = 0.5 × (1 + tanh(t_rel / 0.8))
+
+  ← s_burn ≈ 0 أثناء الدفع الكامل
+  ← s_burn ≈ 1 بعد انتهاء الدفع بـ 2 ثانية
+  ← الانتقال سلس ≈ 1.6 ثانية حول نقطة الانقطاع
+
+γ_ref النهائي:
+  γ_cruise = s_dive × γ_LOS           (s_dive = مزج Hermite 0→1 عند 65-75% مدى)
+  γ_ref = (1 − s_burn) × γ_natural + s_burn × γ_cruise</div>
+
+<h3>ج. مرحلة الانقطاع — التخميد الشديد</h3>
+<div class="eq">مرحلة الانقطاع حرجة — الدفع ينخفض بسرعة ولكن الصاروخ لا يزال سريعاً.
+الأوزان تتصاعد إلى ذروة ثم تنخفض بـ Hermite fade:
+
+  s_to = (t − t_tailoff_start) / (t_tailoff_end − t_tailoff_start)
+  s_peak = 0.67       ← الذروة ~1 ثانية بعد بدء الانقطاع
+  s_up = min(1, s_to / s_peak)
+
+الأوزان عند الذروة (s_up = 1):
+  q_w = 200 + 800 = 1000      ← تخميد ميلان شديد
+  α_w = 120 + 800 = 920       ← منع تجاوز زاوية الهجوم
+  γ_w = 250 × 0² + 2 = 2     ← يتوقف عن تتبع γ (لا دفع!)
+
+بعد الذروة (s_to &gt; 0.67):
+  h(s) = 3s² − 2s³             (Hermite fade 1→0)
+  q_w_final = q_w_peak + (60 − q_w_peak) × h   → 60 (إبحار)</div>
+
+<h3>د. التخميد التكيفي أثناء الدفع</h3>
+<div class="eq">خوارزمية تكيفية تمنع التذبذب عند t=3-4s:
+
+  إذا |γ_err| &lt; 5° و |q_rate| &gt; 3°/s:
+    q_w += 300 × (1 − |γ_err|/5)      ← تخميد إضافي عندما γ قريب من الهدف لكن q عالٍ
+
+  إذا |α| &gt; 1°:
+    α_w += 200 × min(|α|/3, 3)        ← منع نمو زاوية الهجوم مبكراً</div>
+
+<h3>هـ. تثبيت الارتفاع أثناء الإبحار</h3>
+<div class="eq">بعد انتهاء الدفع، يُلتقط ارتفاع الذروة ويُستخدم كمرجع:
+
+  h_cruise_target = altitude عند s_burn &gt; 0.95    ← التقاط لحظي
+  t_since_burn = t − t_burn
+  early_boost = max(0, 1 − t_since_burn/3)        ← يتلاشى خلال 3s
+
+  h_cruise_w = (15 + 35 × early_boost) × (1 − s_dive)
+
+  ← الوزن أعلى مباشرة بعد الانقطاع (50) لإيقاف الصعود
+  ← ثم ينخفض إلى 15 خلال الإبحار
+  ← ثم يتلاشى مع بدء الغوص (s_dive → 1)</div>
+
+<h3>و. جدولة استرداد اللف</h3>
+<div class="eq">مع اقتراب الاصطدام، يجب تصفير زاوية اللف:
+
+  roll_abs = |φ|
+  roll_recovery = clamp((roll_abs − 5°) / (20° − 5°), 0, 1)
+
+الأوزان المعدَّلة:
+  φ_w = 80 + 520 × roll_recovery        80 → 600
+  p_w = 20 + 160 × roll_recovery        20 → 180
+  χ_w = max(25, 120 × (1 − 0.55 × rr)) 120 → 54
+  da_rate_w = 10 − 7 × rr               10 → 3
+
+← عندما |φ| &gt; 20°: كل طاقة التحكم مخصصة لتصفير اللف
+← da_rate_w ينخفض → السماح بمعدلات لف أعلى للاسترداد السريع</div>
+
+<div class="calc-row"><span class="calc-label">زمن بدء الانقطاع</span><span class="calc-input">t_tailoff = t_burn − <span class="fill">1.0</span> s</span></div>
+<div class="calc-row"><span class="calc-label">نسبة المدى لبدء الغوص</span><span class="calc-input">cruise_progress = <span class="fill">65</span> %</span></div>
+<div class="calc-row"><span class="calc-label">عتبة استرداد اللف</span><span class="calc-input">φ_start = <span class="fill">5</span> ° ، φ_full = <span class="fill">20</span> °</span></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>الخطوة 84: نموذج قياس MHE — h(x,p) بـ13 مخرج <span class="new-badge" style="background:#2980b9">MEAS</span></h2>
+<div class="step-box" style="border-color:#2980b9">
+<div class="step-title"><span class="step-num" style="background:#2980b9">84</span> نموذج القياس الكامل ربط حالات MHE بقراءات الحساسات</div>
+
+<div class="note" style="border-right-color:#2980b9">
+<strong>البنية:</strong> MHE يقارن توقعاته h(x,p) مع القياسات الفعلية y_meas. الفرق يدفع المحلول لتعديل تقديرات الحالة. الملف المرجعي: <code>m130_mhe_model.py</code> دالة <code>build_m130_mhe_measurement_expr()</code>.
+</div>
+
+<h3>أ. متجه القياس [13 عنصر]</h3>
+<div class="eq">h(x, p) = [gyro(3), accel_body(3), baro(1), gps_pos(3), gps_vel(3)]
+
+<strong>1-3) الجيروسكوب (مع انحياز):</strong>
+  h[0] = p + b_gx        (معدل لف + انحياز)
+  h[1] = q + b_gy        (معدل ميلان + انحياز)
+  h[2] = r + b_gz        (معدل انعراج + انحياز)
+
+<strong>4-6) مقياس التسارع (قوة نوعية في إطار الجسم):</strong>
+  a_body = (F_thrust + F_aero) / m        (بدون الجاذبية!)
+
+  تحويل من إطار الرياح إلى إطار الجسم عبر R_{wind→body}(α, β):
+  h[3] = (T − D·cosα·cosβ + L_pitch·sinα − L_yaw·sinβ) / m
+  h[4] = (−D·sinβ + L_yaw·cosβ) / m
+  h[5] = (−D·sinα·cosβ − L_pitch·cosα) / m
+
+  ← L_pitch, L_yaw, D تُحسب من نفس متعددات الحدود الإيروديناميكية
+    المستخدمة في ديناميكا MHE (تطابق تام مطلوب!)
+
+<strong>7) البارومتر:</strong>
+  h[6] = h̃ × 100 + launch_alt           (ارتفاع فوق سطح البحر)
+
+<strong>8-10) GPS — الموقع:</strong>
+  h[7] = x̃ × 1000                       (المدى الأرضي بالمتر)
+  h[8] = ỹ × 1000                       (الانحراف الجانبي بالمتر)
+  h[9] = h̃ × 100 + launch_alt           (ارتفاع GPS)
+
+<strong>11-13) GPS — السرعة (مع رياح!):</strong>
+  h[10] = V·cosγ·cosχ + w_n             (سرعة شمالية + رياح شمالية)
+  h[11] = V·cosγ·sinχ + w_e             (سرعة شرقية + رياح شرقية)
+  h[12] = −V·sinγ                        (سرعة عمودية — بدون رياح)</div>
+
+<div class="warn">
+<strong>ملاحظة حاسمة — الرياح في سرعة GPS:</strong> GPS يقيس السرعة بالنسبة للأرض (ground-relative). إذا كانت هناك رياح، فالسرعة الأرضية = سرعة الهواء + الرياح. MHE يستغل هذا الفرق لتقدير الرياح (w_n, w_e) — وهذه هي الآلية الوحيدة لتقدير الرياح بدون مقياس سرعة هواء (pitot tube).
+</div>
+
+<h3>ب. مصفوفة أوزان القياسات R</h3>
+<div class="eq">مصفوفة الأوزان R تعكس دقة كل حساس (عكس التباين):
+
+  R = diag(r_gyro³, r_accel³, r_baro, r_gps_pos³, r_gps_vel³)
+
+حيث r_i ∝ 1/σ²_i — الحساس الأدق يحصل على وزن أعلى.
+
+القيم النموذجية:
+  r_gyro  = 1/(0.003²) ≈ 111111     ← الجيروسكوب الأدق
+  r_accel = 1/(0.08²)  ≈ 156        ← مقياس التسارع
+  r_baro  = 1/(1.2²)   ≈ 0.69       ← البارومتر
+  r_gps_p = 1/(2.5²)   ≈ 0.16       ← GPS موقع (الأقل دقة)
+  r_gps_v = 1/(0.6²)   ≈ 2.78       ← GPS سرعة</div>
+
+<h3>ج. بوابة حداثة GPS — التفاصيل التنفيذية</h3>
+<div class="eq">GPS يُحدَّث كل 200ms (5 Hz) بينما MHE يحلّ كل 20ms (50 Hz).
+بين تحديثات GPS، القراءة مكررة — لا معلومة جديدة!
+
+التنفيذ في MHE:
+  W_fresh = R الكامل (30×30)
+  W_stale = نسخة من W_fresh مع تصفير الصفوف/الأعمدة [7:13]
+
+  لكل مرحلة k في نافذة MHE:
+    إذا gps_fresh[k] = True:
+      solver.cost_set(k, "W", W_fresh)
+    وإلا:
+      solver.cost_set(k, "W", W_stale)    ← GPS مُتجاهَل هذه المرحلة
+
+  → مصفوفات W مُحسَبة مسبقاً (لا تخصيص ذاكرة أثناء الحل)
+  → في نافذة 20 مرحلة: ~1 مرحلة GPS حديثة، 19 مرحلة IMU+baro فقط</div>
+
+<div class="calc-row"><span class="calc-label">عدد مخارج h(x,p)</span><span class="calc-input">ny = <span class="fill">13</span></span></div>
+<div class="calc-row"><span class="calc-label">نسبة مراحل GPS الحديثة</span><span class="calc-input"><span class="fill">1</span> من كل <span class="fill">10</span> مرحلة (5Hz/50Hz)</span></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>الخطوة 85: تكامل MHE-MPC ومزج الحالة <span class="new-badge" style="background:#2980b9">BLEND</span></h2>
+<div class="step-box" style="border-color:#2980b9">
+<div class="step-title"><span class="step-num" style="background:#2980b9">85</span> خوارزمية مزج EKF↔MHE والاندماج مع MPC — بوابة الجودة والمنحدرات الزمنية</div>
+
+<h3>أ. نافذة المزج الزمنية</h3>
+<div class="eq">MHE يحتاج وقتاً لملء نافذته (20 مرحلة × 20ms = 400ms).
+الانتقال من EKF إلى MHE يتم تدريجياً:
+
+  t_ramp_start = 5.0 s     (بعد استقرار الاحتراق)
+  t_ramp_end   = 7.0 s     (انتقال كامل)
+
+  إذا t ≤ 5.0:  blend = 0    (EKF فقط)
+  إذا t ≥ 7.0:  blend = 1    (MHE فقط)
+  وإلا:         blend = (t − 5.0) / 2.0
+
+نافذة ارتفاع إضافية (حماية قرب الأرض):
+  إذا h_AGL &lt; 150 m:
+    alt_frac = max(0, (h_AGL − 50) / 100)
+    blend × = alt_frac
+
+  ← blend = 0 تحت 50 م AGL (EKF أكثر موثوقية قرب الأرض)
+  ← blend كامل فوق 150 م AGL</div>
+
+<h3>ب. الحالات المُمزَجة — وأيها مُستبعَد</h3>
+<div class="eq">الحالات التي تُمزَج من MHE إلى MPC:
+
+  x_mpc[1] = (1−blend) × γ_truth  + blend × γ_mhe     ✓ زاوية المسار
+  x_mpc[2] = (1−blend) × χ_truth  + blend × χ_mhe     ✓ الاتجاه
+  x_mpc[9] = (1−blend) × h_truth  + blend × h_mhe     ✓ الارتفاع
+  x_mpc[10]= (1−blend) × x_truth  + blend × x_mhe     ✓ المدى
+  x_mpc[11]= (1−blend) × y_truth  + blend × y_mhe     ✓ الانحراف
+
+الحالة المُستبعَدة:
+  V (السرعة) — لا تُمزَج! ✗
+  السبب: انحياز +6 m/s من عدم تطابق النموذج.
+  مزج V المنحاز يسبب خطأ في حساب γ_LOS.
+
+  p, q, r, α, β, φ — تبقى من القياسات المباشرة (أدق من MHE)</div>
+
+<h3>ج. بوابة الجودة (Quality Gate)</h3>
+<div class="eq">MHE يُنتج مقياس جودة quality ∈ [0, 1]:
+
+  quality = 1.0     ← مثالي
+
+العوامل المؤثرة:
+  1) حالة المحلول: إذا status ∈ {3, 4}:  quality *= 0.5
+  2) ضوضاء العملية: إذا ‖w‖ &gt; 5:  quality *= max(0.1, 1 − (‖w‖−5)/15)
+  3) تشبع الحدود: إذا |wind| أو |gyro_bias| &gt; 90% من الحد:
+     quality *= max(0.3, 1 − (sat−0.9)/0.1 × 0.7)
+  4) منحدر البدء: أول 5 حلول:
+     quality *= solve_count / 5
+
+بوابة القبول:
+  إذا quality &lt; 0.3: تُهمَل نتيجة MHE كلياً
+  MPC يستمر بالقياسات المباشرة (blend = 0)</div>
+
+<h3>د. تعويض الرياح في الاتجاه</h3>
+<div class="eq">MHE يقدّر الرياح (w_n, w_e) من الفرق بين سرعة GPS وسرعة الهواء.
+هذه التقديرات تُمرَّر ضمنياً عبر γ_mhe و χ_mhe المُعدَّلتين:
+
+  سرعة أرضية = سرعة هواء + رياح
+  GPS يقيس سرعة أرضية → MHE يفصل المكوّنتين
+
+التأثير على التوجيه:
+  بدون تعويض: χ_ref يشير للهدف بالنسبة للأرض
+  مع رياح جانبية: الصاروخ ينجرف → يحتاج زاوية تصحيح
+  MHE يُدرج الرياح في γ, χ المقدَّرة → MPC يصحّح تلقائياً
+
+تقدير الرياح النموذجي: ±5 m/s (حدود acados: ±5 m/s لكل محور)</div>
+
+<h3>هـ. آلية الاسترداد عند فشل MPC</h3>
+<div class="eq">سلسلة الاسترداد عند فشل المحلول:
+
+  1) فشل واحد (status ≠ 0,2):
+     → الاحتفاظ بآخر أوامر صالحة (hold)
+
+  2) 3 إخفاقات متتالية:
+     → زيادة تكرارات RTI: n_rti = 8 (بدلاً من 3)
+
+  3) 10 إخفاقات متتالية:
+     → إعادة تهيئة كاملة (reinit):
+        solver.reset()
+        تخمين أولي بـ Forward Euler
+        warm = False
+        consec_fails = 0
+
+  ← لا تخفيض تدريجي للأوامر (تجريبياً: يسبب فقدان السيطرة
+     في مرحلة الغوص النهائية حيث الأوامر حرجة)</div>
+
+<h3>و. التخمين الأولي بـ Forward Euler</h3>
+<div class="eq">عند أول حل أو بعد reinit، يحتاج المحلول تخميناً أولياً:
+
+  لكل مرحلة k ∈ [0, N]:
+    t_k = t + k × dt
+    p_k = get_params(t_k)      ← كتلة ودفع عند t_k
+
+    V̇ ≈ (T·cosα − 0.5·ρ·V²·S_ref·CD − m·g·sinγ) / m
+    γ̇ ≈ −g·cosγ/V + T·sinα/(m·V)
+
+    x[k+1] = x[k] + ẋ × dt
+    معدلات الدوران × = 0.95      ← تلاشي بطيء (تخمين محافظ)
+    δ_act → δ_s بمعدل exp(−dt/τ)  ← نموذج السيرفو
+
+  ← تقريب خشن لكنه يضمن أن المحلول يبدأ من نقطة معقولة
+  ← بعد 3 حلول ناجحة: warm = True → التخمين من الحل السابق (shift)</div>
+
+<div class="calc-row"><span class="calc-label">عتبة بوابة الجودة</span><span class="calc-input">quality_gate = <span class="fill">0.3</span></span></div>
+<div class="calc-row"><span class="calc-label">حد فشل المحلول لإعادة التهيئة</span><span class="calc-input">max_fails = <span class="fill">10</span></span></div>
+<div class="calc-row"><span class="calc-label">تكرارات RTI (عادي / فشل)</span><span class="calc-input"><span class="fill">3</span> / <span class="fill">8</span></span></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>الخطوة 86: معمارية تدفق البيانات والتوقيت <span class="new-badge" style="background:#2980b9">ARCH</span></h2>
+<div class="step-box" style="border-color:#2980b9">
+<div class="step-title"><span class="step-num" style="background:#2980b9">86</span> المعمارية الكاملة لتدفق البيانات بين الحساسات والمقدّرات والمتحكمات والمشغلات</div>
+
+<h3>أ. مخطط تدفق البيانات</h3>
+<div class="eq">
+┌──────────┐    y_meas[13]    ┌──────────┐   x̂[17]    ┌──────────┐   δ_cmd[3]   ┌──────────┐
+│ SensorBus│───────────────→ │    MHE   │──────────→│    MPC   │────────────→│ FinMixer │
+│ @200Hz   │  + gps_fresh    │  @50Hz   │ + quality │  @50Hz   │ δe,δr,δa   │ X-config │
+│          │  + baro_fresh   │  N=20    │ + d_hat   │  N=200   │            │          │
+└──────────┘                 └──────────┘           └──────────┘            └──────────┘
+     ↑                            ↑                      ↑                      │
+  Simulation                 δ_act[3]               γ_ref, χ_ref            fins[4]
+  Truth State                p[9]                   من LOS Guidance            │
+                        (من MPC سابق)                                          ↓
+                                                                         ┌──────────┐
+                                                                         │  Servos  │
+                                                                         │ τ=25ms   │
+                                                                         └──────────┘</div>
+
+<h3>ب. تسلسل التنفيذ في كل دورة (20 ms)</h3>
+<div class="eq">الترتيب الدقيق في كل دورة تحكم:
+
+  1. قراءة الحساسات → SensorPacket {y_meas, imu_fresh, gps_fresh, baro_fresh}
+  2. دفع القياسات إلى MHE: push_measurement(t, y_meas, gps_fresh)
+  3. دفع التحكم والمعاملات: push_control_and_params(t, u_prev, p)
+  4. حل MHE → MheOutput {x_hat, d_hat, quality, status}
+  5. تحويل الحالة: extract_mpc_state(state_dict) → x_mpc[18]
+  6. مزج MHE↔truth: blend(x_mpc, x_hat, quality, t, h)
+  7. حساب التوجيه: compute_los_guidance(x, y, h) → γ_ref, χ_ref
+  8. جدولة الأوزان: W(t, phase, roll_recovery)
+  9. حل MPC → u_opt[3], x1[18]
+  10. استخراج أوامر الزعانف: δe, δr, δa من x1[12:15]
+  11. خلط X-config: fins = mix(δe, δr, δa)
+  12. إرسال أوامر الزعانف → CAN bus → سيرفو</div>
+
+<h3>ج. ميزانية الزمن المفصّلة</h3>
+<table class="sym-table">
+<tr><th>العملية</th><th>الزمن النموذجي</th><th>الزمن الأسوأ</th><th>المنصة</th></tr>
+<tr><td>قراءة IMU (SPI)</td><td>0.2 ms</td><td>0.5 ms</td><td>ARM64</td></tr>
+<tr><td>قراءة GPS (UART)</td><td>0.1 ms</td><td>0.3 ms</td><td>ARM64</td></tr>
+<tr><td>تحويل الإطارات</td><td>0.1 ms</td><td>0.2 ms</td><td>ARM64</td></tr>
+<tr><td>حل MHE (acados)</td><td>2.0 ms</td><td>5.0 ms</td><td>Snapdragon 8 Gen 3</td></tr>
+<tr><td>حساب LOS + أوزان</td><td>0.1 ms</td><td>0.2 ms</td><td>ARM64</td></tr>
+<tr><td>حل MPC (acados SQP_RTI)</td><td>3.5 ms</td><td>8.0 ms</td><td>Snapdragon 8 Gen 3</td></tr>
+<tr><td>خلط الزعانف + CAN</td><td>0.1 ms</td><td>0.3 ms</td><td>ARM64</td></tr>
+<tr><td><strong>المجموع</strong></td><td><strong>6.1 ms</strong></td><td><strong>14.5 ms</strong></td><td><strong>&lt; 20 ms ✓</strong></td></tr>
+</table>
+
+<div class="note" style="border-right-color:#2980b9">
+<strong>Partial Condensing:</strong> السر في سرعة الحل على ARM64 هو <code>qp_solver_cond_N = 10</code>. بدلاً من حل QP بـ 200 مرحلة (بطيء جداً)، يُكثَّف إلى 10 مراحل — 20× أسرع في HPIPM. هذا هو الفرق بين 3ms (ناجح) و60ms+ (فشل الزمن الحقيقي).
+</div>
+
+<h3>د. متجه معاملات MHE [9 عناصر]</h3>
+<div class="eq">MHE يحتاج معاملات أكثر من MPC لأنه يحتاج مواضع الزعانف كمدخلات معروفة:
+
+  p_mhe[9] = [δe_act, δr_act, δa_act, mass, thrust, Ixx, Iyy, Izz, launch_alt]
+
+  p[0:3] = أوضاع الزعانف الفعلية    ← من الحل السابق لـ MPC
+  p[3]   = الكتلة اللحظية            ← نفس نموذج MPC
+  p[4]   = الدفع اللحظي              ← نفس نموذج MPC
+  p[5:8] = القصور الذاتي             ← يُستوفَى من نسبة الاحتراق
+  p[8]   = ارتفاع الإطلاق            ← ثابت</div>
+
+<h3>هـ. نموذج الدفع التحليلي</h3>
+<div class="eq">بدلاً من جدول دفع، يُستخدم نموذج تحليلي:
+
+<strong>مرحلة الدفع الثابت (t &lt; t_burn − t_tail):</strong>
+  T = T_plateau = I_total × thrust_scale / (t_burn − 0.75 × t_tail)
+
+  T_plateau أعلى ~15-20% من T_average لأن tail-off يخفض المتوسط.
+
+<strong>مرحلة الانقطاع (t_burn − t_tail &lt; t &lt; t_burn):</strong>
+  s = (t − t_tailoff_start) / t_tail          (0 → 1)
+  T = T_plateau × (1 − s)³                    (انحدار مكعّب)
+
+<strong>بعد الاحتراق (t ≥ t_burn):</strong>
+  T = 0</div>
+
+<h3>و. تعويض تأخير النقل بـ lookahead</h3>
+<div class="eq">تأخير النقل (~110ms عبر CAN-bus) لا يُنمذَج داخل MPC
+(Padé(2,2) أثبت عدم استقراره عملياً — انظر الخطوة 77).
+
+البديل: تعويض في طبقة التطبيق عبر lookahead_stage:
+  k_lookahead = round(τ_transport / dt_mpc) = round(0.110 / 0.020) = 6
+
+  بدلاً من استخراج أمر المرحلة 1:
+    δ_cmd = x[1][12:15]                         ← متأخر بـ110ms
+
+  يُستخرَج أمر المرحلة k_lookahead:
+    δ_cmd = x[k_lookahead][12:15]               ← يصل "في الوقت" رغم التأخير
+
+  → الأمر يُرسَل الآن، يتأخر 110ms على CAN، يصل للسيرفو
+    في نفس اللحظة التي خطط لها MPC!</div>
+
+<div class="calc-row"><span class="calc-label">تأخير النقل</span><span class="calc-input">τ_transport = <span class="fill">110</span> ms</span></div>
+<div class="calc-row"><span class="calc-label">مرحلة lookahead</span><span class="calc-input">k = round(τ/dt) = <span class="fill">6</span></span></div>
+<div class="calc-row"><span class="calc-label">زمن حل MPC النموذجي (ARM64)</span><span class="calc-input">t_solve = <span class="fill">3.5</span> ms</span></div>
+<div class="calc-row"><span class="calc-label">نسبة استغلال الدورة</span><span class="calc-input"><span class="fill">___</span> % (يجب &lt; 70%)</span></div>
+</div>
+
 <!-- ملخص المرحلة س -->
 <div class="result-box" style="border-color:#2980b9">
-<div class="result-title" style="color:#1a5276;font-size:18px">ملخص المرحلة س — نظام التحكم المتقدم MPC/MHE</div>
+<div class="result-title" style="color:#1a5276;font-size:18px">ملخص المرحلة س — نظام التحكم المتقدم MPC/MHE (مُوسَّع)</div>
 <div class="result-row"><span class="result-name" style="color:#1a5276">متجه حالة MPC</span><span class="result-val" style="color:#1a5276">[18] = V,γ,χ,p,q,r,α,β,φ,h̃,x̃,ỹ,δe_s,δr_s,δa_s,δe,δr,δa</span></div>
-<div class="result-row"><span class="result-name" style="color:#1a5276">متجه حالة MHE</span><span class="result-val" style="color:#1a5276">[17] = حالات طيران + انحياز جيرو + رياح</span></div>
-<div class="result-row"><span class="result-name" style="color:#1a5276">أفق MPC</span><span class="result-val" style="color:#1a5276">N=200, t_f=4.0 s, dt=20 ms</span></div>
-<div class="result-row"><span class="result-name" style="color:#1a5276">نافذة MHE</span><span class="result-val" style="color:#1a5276">N=20, T=400 ms, dt=20 ms</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">متجه حالة MHE</span><span class="result-val" style="color:#1a5276">[17] = حالات طيران[12] + انحياز جيرو[3] + رياح[2]</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">أفق MPC</span><span class="result-val" style="color:#1a5276">N=200, t_f=4.0 s, dt=20 ms, QP condensed=10</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">نافذة MHE</span><span class="result-val" style="color:#1a5276">N=20, T=400 ms, dt=20 ms, قياسات=13</span></div>
 <div class="result-row"><span class="result-name" style="color:#1a5276">معدل التحكم</span><span class="result-val" style="color:#1a5276">50 Hz (20 ms/دورة)</span></div>
-<div class="result-row"><span class="result-name" style="color:#1a5276">محلول acados</span><span class="result-val" style="color:#1a5276">SQP_RTI + HPIPM (3–8 ms/حل)</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">محلول acados</span><span class="result-val" style="color:#1a5276">SQP_RTI + PARTIAL_CONDENSING_HPIPM (3–8 ms/حل)</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">نوع التكلفة</span><span class="result-val" style="color:#1a5276">LINEAR_LS مع Gauss-Newton + LM=2e-2</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">المعاملات الإيروديناميكية</span><span class="result-val" style="color:#1a5276">درجة 7 فردية + ماخ مكعّب (CFD Qabthah1)</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">مراحل الطيران</span><span class="result-val" style="color:#1a5276">4: دفع → انقطاع → إبحار → غوص (Hermite transitions)</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">مزج MHE↔MPC</span><span class="result-val" style="color:#1a5276">γ,χ,h,x,y (V مُستبعَد) مع quality gate=0.3</span></div>
+<div class="result-row"><span class="result-name" style="color:#1a5276">تعويض تأخير النقل</span><span class="result-val" style="color:#1a5276">lookahead stage k=6 (110ms/20ms)</span></div>
 <div class="result-row"><span class="result-name" style="color:#1a5276">زاوية الاصطدام</span><span class="result-val" style="color:#1a5276">γ = <span class="fill">___</span>° (مطلوب: -30°)</span></div>
 <div class="result-row"><span class="result-name" style="color:#1a5276">CEP عند الهدف</span><span class="result-val" style="color:#1a5276"><span class="fill">___</span> m</span></div>
 </div>
 
 <div class="warn">
-<strong>الدرس الجوهري من المرحلة س:</strong> PID كافٍ لصاروخ بسيط أحادي القناة. لكن صاروخ تكتيكي بـ6 درجات حرية، قيود فيزيائية متعددة، حساسات متعددة المعدلات، وتأخير مشغلات — يحتاج MPC+MHE. الفرق: PID "يتفاعل"، MPC "يتنبأ ويحسّن". هذا هو الفرق بين CEP = 200 m وCEP = 10 m.
+<strong>الدرس الجوهري من المرحلة س:</strong> PID كافٍ لصاروخ بسيط أحادي القناة. لكن صاروخ تكتيكي بـ6 درجات حرية، قيود فيزيائية متعددة، حساسات متعددة المعدلات، وتأخير مشغلات — يحتاج MPC+MHE. الفرق: PID "يتفاعل"، MPC "يتنبأ ويحسّن". هذا هو الفرق بين CEP = 200 m وCEP = 10 m. التوسع من 7 خطوات إلى 14 خطوة يعكس التعقيد الحقيقي لنظام GNC صناعي — من النموذج الرمزي CasADi، مروراً بالمعاملات الإيروديناميكية المناسبة من CFD، وصياغة OCP بقيود متعددة السطوح، وجدولة الأوزان التكيفية عبر 4 مراحل طيران، ونموذج القياس بـ13 مخرج مع بوابة حداثة GPS، ومزج الحالة مع بوابة جودة، إلى المعمارية الكاملة مع تعويض تأخير النقل بـ lookahead. هذا هو نظام التحكم الحقيقي لصاروخ M130.
 </div>
 
 <!-- Phase N Footer / Conclusion -->
